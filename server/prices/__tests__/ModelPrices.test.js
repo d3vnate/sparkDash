@@ -201,6 +201,10 @@ test("disabled handler returns an empty catalog without fetching on a fresh inst
 });
 
 test("default fetch disables redirects and caps the body size", async () => {
+  // This test exercises the real default fetch path, which is now behind the
+  // default-deny egress guard. Opt in for the duration of the test only.
+  const previousEgress = process.env.SPARKDASH_ALLOW_WAN_EGRESS;
+  process.env.SPARKDASH_ALLOW_WAN_EGRESS = "1";
   const dir = tmpDir();
   const cachePath = path.join(dir, "model-prices.json");
   const inits = [];
@@ -231,6 +235,35 @@ test("default fetch disables redirects and caps the body size", async () => {
     assert.equal(res.statusCode, 502);
   } finally {
     globalThis.fetch = realFetch;
+    if (previousEgress === undefined) delete process.env.SPARKDASH_ALLOW_WAN_EGRESS;
+    else process.env.SPARKDASH_ALLOW_WAN_EGRESS = previousEgress;
+  }
+});
+
+test("the default fetch is refused when WAN egress is not explicitly allowed", async () => {
+  const previousEgress = process.env.SPARKDASH_ALLOW_WAN_EGRESS;
+  delete process.env.SPARKDASH_ALLOW_WAN_EGRESS;
+  const realFetch = globalThis.fetch;
+  let called = 0;
+  globalThis.fetch = async () => {
+    called += 1;
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    const handler = createModelPricesHandler({
+      enabled: true,
+      cachePath: path.join(tmpDir(), "missing.json"),
+      ttlMs: 0,
+      now: () => 7_000_000,
+      log: { warn: () => {} },
+    });
+    const res = fakeRes();
+    await handler({}, res);
+    assert.equal(res.statusCode, 502);
+    assert.equal(called, 0, "the guard must stop the request before fetch");
+  } finally {
+    globalThis.fetch = realFetch;
+    if (previousEgress !== undefined) process.env.SPARKDASH_ALLOW_WAN_EGRESS = previousEgress;
   }
 });
 

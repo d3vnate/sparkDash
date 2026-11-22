@@ -19,7 +19,11 @@ const DEFAULT_MIN_GAP_MS = 1500;
 const LONG_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 const LONG_MIN_GAP_MS = 60_000;
 // Rewriting the whole file is the cost, so save every few minutes (and on shutdown), not every minute.
-const SAVE_INTERVAL_MS = 5 * 60_000;
+// Override with SPARKDASH_HISTORY_SAVE_MS.
+const SAVE_INTERVAL_MS = (() => {
+  const n = Number.parseInt(process.env.SPARKDASH_HISTORY_SAVE_MS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 5 * 60_000;
+})();
 const DEVICE_KEYS = ["u", "c", "p"];
 // A host never has more cards than this; it also bounds the memory a bad payload could use.
 const MAX_DEVICES = 16;
@@ -514,9 +518,10 @@ export class UnitHistory {
    *   llm: [{ port, points: [{ t, genTps?, prefillTps?, kvUsage? }] }] }.
    * Throws on an unknown range (the route validates first).
    */
-  query(unitId, range, atMs = this._now()) {
+  query(unitId, range, atMs = this._now(), options = {}) {
     const spec = Object.hasOwn(HISTORY_RANGES, range) ? HISTORY_RANGES[range] : null;
     if (!spec) throw new Error(`unknown range: ${range}`);
+    const withCounts = options?.withCounts === true;
     this._ensureTiersLoaded();
     const to = atMs;
     const from = atMs - spec.spanMs;
@@ -542,10 +547,10 @@ export class UnitHistory {
             lp = { t };
             byT.set(t, lp);
           }
-          lp[parsed.name] = statOut(key, s);
+          lp[parsed.name] = statOut(key, s, withCounts);
         } else {
           if (!point) point = { t };
-          point[key] = statOut(key, s);
+          point[key] = statOut(key, s, withCounts);
         }
       }
       if (point) points.push(point);

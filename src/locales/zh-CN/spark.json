@@ -123,6 +123,8 @@
       "mtpAccept": "自启动以来推测解码 / MTP 的接受率（接受的草稿 Token 数 ÷ 草稿 Token 总数）。越高表示推测解码收益越大；未启用或尚未使用时显示 —。"
     },
     "showcase": "演示",
+    "openServerView": "服务器视图",
+    "openServerViewHelp": "打开 LLM 服务器视图，查看队列、预填充、解码与缓存趋势",
     "remote": {
       "title": "远程",
       "hint": "按需测试端点。粘贴 URL 或输入主机和端口，点击运行前不会探测。",
@@ -317,6 +319,143 @@
       "prefill": "预填充峰值 {{peak}} tok/s（平均 {{average}}）",
       "uncachedPrefill": "未缓存预填充峰值 {{peak}} tok/s（平均 {{average}}）",
       "cachedPrefill": "缓存预填充峰值 {{peak}} tok/s（平均 {{average}}）"
+    }
+  },
+  "llmServer": {
+    "title": "LLM 服务器",
+    "subtitle": "实时引擎与历史数据：请求时间花在排队、预填充还是解码，以及解码开始下降时的队列深度。",
+    "openCard": "打开 {{name}} 的 {{port}} 端口",
+    "live": "在线",
+    "unavailable": "不可用",
+    "offline": "离线",
+    "viaSsh": "SSH 隧道",
+    "runningWaiting": "运行 / 等待",
+    "decodeTps": "解码 tok/s",
+    "prefillTps": "预填充 tok/s",
+    "kvUsage": "KV 占用",
+    "cacheHit": "缓存命中",
+    "decodeTrend": "解码趋势",
+    "onlineCount": "{{total}} 个中 {{online}} 个在线",
+    "onlineServers": "在线服务器",
+    "fleetDecode": "集群解码 tok/s",
+    "fleetWaiting": "集群等待数",
+    "noServers": "未配置 LLM 服务器",
+    "noServersHint": "在 Spark 上启用 LLM 监控并设置引擎端口后，会显示在这里。",
+    "back": "全部服务器",
+    "notFound": "该 Spark 已不在集群中。",
+    "monitoringOff": "此主机未启用 LLM 监控，或它是工作节点。",
+    "portAria": "LLM 端口",
+    "modelAria": "服务模型",
+    "modelHint": "实时引擎指标覆盖整个端点；Token 总量跟随所选模型。",
+    "rangeAria": "历史范围",
+    "openHost": "打开主机",
+    "liveTitle": "实时状态",
+    "context": "{{size}}k 上下文",
+    "perStreamTps": "单流 tok/s",
+    "perStreamPrefill": "单流预填充",
+    "cachedPrefill": "缓存预填充",
+    "uncachedPrefill": "计算预填充",
+    "deviceMemory": "引擎设备内存",
+    "mtpAcceptance": "MTP 接受率",
+    "ttftP95": "TTFT p95",
+    "ttftMean": "TTFT 均值",
+    "itlP95": "ITL p95",
+    "e2eP95": "延迟 p95",
+    "latencyMean": "延迟均值",
+    "prefillP95": "预填充 p95",
+    "decodeP95": "解码 p95",
+    "noLive": "此端点当前无响应。",
+    "windowTitle": "窗口 · {{range}}",
+    "requests": "已完成请求",
+    "queuePerRequest": "排队 / 请求",
+    "prefillPerRequest": "预填充 / 请求",
+    "decodePerRequest": "解码 / 请求",
+    "ttftPerRequest": "TTFT / 请求",
+    "kvMax": "KV 峰值",
+    "deviceMax": "引擎设备峰值",
+    "preemptions": "抢占次数",
+    "tokensPerRound": "每轮 token 数",
+    "timePrefilling": "预填充时间",
+    "timeDecoding": "解码时间",
+    "timeQueued": "排队时间",
+    "timeIdle": "空闲时间",
+    "maxQueue": "最深队列",
+    "historyOffTitle": "指标历史已关闭",
+    "historyOffHint": "在 设置 → 指标历史 中开启后，才会采集此视图使用的 1 分钟 / 15 分钟序列。实时指标仍可用。",
+    "staleError": "无法刷新窗口：{{error}}",
+    "noHistory": "此范围内还没有数据桶。新版本运行后才会记录队列与请求时间序列。",
+    "insightsTitle": "洞察",
+    "insightsSub": "解码在队列 {{waiting}} 以内保持稳定；到 {{collapseWaiting}} 时进一步下降。",
+    "breakdownTitle": "请求时间构成",
+    "dailyTitle": "每日峰值",
+    "tokensTitle": "Token 总量",
+    "charts": {
+      "stateTitle": "各状态耗时",
+      "stateHint": "每个数据桶的请求秒数合计",
+      "queue": "排队等待",
+      "prefill": "预填充",
+      "decode": "解码",
+      "overhead": "其他开销",
+      "queueDepth": "队列深度",
+      "runningSlots": "运行槽位",
+      "perStreamDecode": "单流解码",
+      "queueDecodeTitle": "队列深度与解码",
+      "kneeNote": "拐点在队列 {{waiting}} · {{tps}} tok/s",
+      "knee": "拐点",
+      "ttft": "TTFT",
+      "buckets": "数据桶",
+      "prefillDecodeTitle": "预填充与解码",
+      "prefillDecodeHint": "每条线使用独立刻度",
+      "cacheKvTitle": "缓存与 KV",
+      "cacheKvHint": "命中率与 KV 为 0–100%，设备内存使用独立刻度",
+      "cacheHit": "缓存命中率",
+      "kvUsage": "KV 占用",
+      "deviceMemory": "引擎设备内存",
+      "cachedTokens": "缓存提示 token",
+      "computedTokens": "计算提示 token",
+      "prefillShare": "预填充占比",
+      "cacheHitRate": "缓存命中率"
+    }
+  },
+  "llmInsights": {
+    "empty": "暂无洞察。服务器需要积累一些队列与请求时间数据后，才能比较不同队列深度。",
+    "severity": {
+      "info": "提示",
+      "warn": "注意"
+    },
+    "queueKnee": {
+      "title": "队列拐点",
+      "detail": "单流解码在队列不超过 {{waiting}} 时保持在 {{tps}} tok/s（无排队时 {{baseline}} tok/s）。队列达到 {{collapseWaiting}} 时降至 {{collapseTps}} tok/s，TTFT 为 {{collapseTtft}}。拐点基于 {{buckets}} 个数据桶。",
+      "detailHolds": "单流解码在观测到的最深队列（{{waiting}}；{{baselineWaiting}} 时为 {{baseline}} tok/s）仍保持 {{tps}} tok/s，基于 {{buckets}} 个数据桶。尚未观察到解码明显下降。"
+    },
+    "queuePrefill": {
+      "title": "队列深度与预填充时间",
+      "detail": "队列 {{collapseWaiting}} 时每个请求的预填充时间为 {{collapsePrefill}}，是队列 {{baselineWaiting}} 时（{{baselinePrefill}}）的 {{ratio}} 倍。这可能是排队导致的预填充干扰，也可能是排队数据桶中的负载组合更重。"
+    },
+    "requestBreakdown": {
+      "title": "请求时间去向",
+      "detail": "{{requests}} 个已完成请求中：排队等待 {{queueShare}}，预填充 {{prefillShare}}，解码 {{decodeShare}}，其他开销 {{overheadShare}}。平均每个请求：排队 {{queueSeconds}} + 预填充 {{prefillSeconds}} + 解码 {{decodeSeconds}}（TTFT {{ttftSeconds}}，总计 {{latencySeconds}}）。"
+    },
+    "cacheGap": {
+      "title": "前缀缓存余量",
+      "detail": "缓存命中率为 {{hitRate}}，目标为 {{target}}。补齐差距后每个请求约可减少 {{savedSeconds}} 预填充（本窗口共 {{savedTotal}}）。本窗口复用了 {{cached}} 个缓存提示 token，计算了 {{computed}} 个。"
+    },
+    "cacheTelemetryMissing": {
+      "title": "缓存遥测不可用",
+      "detail": "此引擎版本未报告共享缓存组（{{reason}}）。前缀缓存命中率仍可从 /metrics 读取；缓存池与提示状态数据暂不可用。",
+      "reasonUnknown": "/health 中没有缓存组"
+    },
+    "kvPressure": {
+      "title": "KV 与引擎内存压力",
+      "detail": "KV 占用峰值 {{usageMax}}（平均 {{usageMean}}）。引擎占用 {{deviceMax}} GiB 设备内存，抢占 {{preemptions}} 次。"
+    },
+    "mtpEfficiency": {
+      "title": "投机解码",
+      "detail": "MTP 接受率为 {{acceptance}}，每轮解码产出 {{tokensPerRound}} 个 token，有效解码 {{decodeTps}} tok/s。"
+    },
+    "longContext": {
+      "title": "长上下文负载",
+      "detail": "提示 token 是生成 token 的 {{ratio}} 倍（每请求 {{promptPerRequest}} 提示 vs {{outputPerRequest}} 输出）；{{cachedShare}} 的提示 token 来自缓存。"
     }
   }
 }

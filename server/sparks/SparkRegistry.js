@@ -685,6 +685,10 @@ export class SparkRegistry {
       hermesMonitoring: config.platform !== "windows" && Boolean(config.hermesMonitoring),
       disabledDevices: Array.isArray(config.disabledDevices) ? config.disabledDevices : [],
       disabledInterfaces: Array.isArray(config.disabledInterfaces) ? config.disabledInterfaces : [],
+      /** Optional GPU-pool total override in MiB (Windows UMA carve-outs). */
+      vramTotalMb: this._normalizeVramTotalMb(config.vramTotalMb),
+      /** Optional per-unit fast-poll interval in ms; null uses the global setting. */
+      pollIntervalMs: this._normalizePollIntervalMs(config.pollIntervalMs),
       storagePollDisabled: Boolean(config.storagePollDisabled),
     };
   }
@@ -694,6 +698,19 @@ export class SparkRegistry {
     const n = typeof value === "string" ? parseInt(value, 10) : Number(value);
     if (Number.isInteger(n) && n >= 1 && n <= 65535) return n;
     return 8188;
+  }
+
+  /** Normalize an optional GPU-pool total override in MiB; empty/invalid → null. */
+  _normalizeVramTotalMb(value) {
+    const n = typeof value === "string" ? Number(value) : value;
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : null;
+  }
+
+  /** Normalize an optional per-unit poll interval (0.5–60 s); empty/invalid → null. */
+  _normalizePollIntervalMs(value) {
+    const n = typeof value === "string" ? Number(value) : value;
+    if (!Number.isFinite(n) || n < 500 || n > 60000) return null;
+    return Math.round(n);
   }
 
   /** Normalize role; legacy workerNode=true → worker. */

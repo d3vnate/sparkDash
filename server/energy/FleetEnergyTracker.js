@@ -12,7 +12,10 @@ const RETENTION_MS = 31 * DAY_MS;
 const MAX_COMPLETED_BUCKETS = 44_640;
 const MAX_GAP_MS = 10_000;
 const CURRENT_WINDOW_MS = 30_000;
-const DEFAULT_FLUSH_INTERVAL_MS = 30_000;
+export const DEFAULT_FLUSH_INTERVAL_MS = (() => {
+  const n = Number.parseInt(process.env.SPARKDASH_ENERGY_FLUSH_MS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 30_000;
+})();
 const MAX_RECENT_SAMPLES = 10_000;
 const MAX_NODE_WH_PER_MINUTE = 4;
 const MIN_NODE_WATTS = 28.2;

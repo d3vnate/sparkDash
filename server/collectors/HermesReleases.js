@@ -7,7 +7,12 @@
  * dialog must show what would actually change: the pending commits. The latest
  * GitHub release is still fetched (cached) so we can detect a real version bump
  * and show the release changelog only in that case.
+ *
+ * GitHub is outside the local network, so the fetch is refused unless the
+ * operator explicitly allows WAN egress (SPARKDASH_ALLOW_WAN_EGRESS=1).
  */
+import { guardedFetch } from "../net/egress.js";
+
 const GITHUB_API_URL =
   "https://api.github.com/repos/NousResearch/hermes-agent/releases/latest";
 const FETCH_TIMEOUT_MS = 8000;
@@ -108,7 +113,7 @@ export async function getLatestRelease() {
   if (cache.release && Date.now() - cache.at < RELEASES_CACHE_MS) {
     return cache.release;
   }
-  const res = await fetch(GITHUB_API_URL, {
+  const res = await guardedFetch(GITHUB_API_URL, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     headers: {
       Accept: "application/vnd.github+json",

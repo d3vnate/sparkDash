@@ -83,6 +83,21 @@ test("send: delivered through a real socket, pinned to the address the policy ch
   assert.deepEqual(lookup.asked, ["hooks.example.test"], "resolved exactly once — the connection reuses that answer");
 });
 
+test("send: a public channel is refused while WAN egress is disabled", async () => {
+  const previous = process.env.SPARKDASH_ALLOW_WAN_EGRESS;
+  delete process.env.SPARKDASH_ALLOW_WAN_EGRESS;
+  try {
+    const r = await new Notifier({ lookup: stubLookup(["93.184.216.34"]), log: quietLog }).send(
+      { id: "c", name: "X", type: "webhook", url: "http://hooks.example.test/hook" },
+      firing
+    );
+    assert.equal(r.ok, false);
+    assert.match(r.error, /outside the local network/);
+  } finally {
+    if (previous !== undefined) process.env.SPARKDASH_ALLOW_WAN_EGRESS = previous;
+  }
+});
+
 test("send: a host that resolves to a forbidden address is refused, and nothing is sent", async (t) => {
   const rx = await receiver();
   t.after(rx.close);

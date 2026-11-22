@@ -1,7 +1,10 @@
 import { monthRange } from "./FleetEnergyMonthly.js";
 
 const MAX_POWER_TELEMETRY_AGE_MS = 10_000;
-const ENERGY_SAMPLE_INTERVAL_MS = 2_000;
+export const ENERGY_SAMPLE_INTERVAL_MS = (() => {
+  const n = Number.parseInt(process.env.SPARKDASH_ENERGY_SAMPLE_MS || "", 10);
+  return Number.isFinite(n) && n > 0 ? n : 2_000;
+})();
 
 function hasFreshTimestamp(timestamp, atMs) {
   if (!Number.isFinite(timestamp) || !Number.isFinite(atMs)) return false;

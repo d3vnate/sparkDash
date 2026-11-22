@@ -2,6 +2,11 @@ import { buildToolEvalArgs, mayUseSavedKey, splitExtraArgs, validateBaseUrl } fr
 import { ALLOWED_EXTRAS, installCommandLine, runDirRef } from "./commands.js";
 import { isValidRunId, newRunId } from "./ToolEvalStore.js";
 import { publicSpec } from "./spec.js";
+import { wanEgressAllowed } from "../net/egress.js";
+
+/** Tool Eval Bench installs and update checks reach GitHub from the Spark. */
+const WAN_EGRESS_DISABLED =
+  "Internet egress is blocked by default. Set SPARKDASH_ALLOW_WAN_EGRESS=1 only when the operator explicitly allows it.";
 
 /** Benchmark pages served by the tool-eval-bench engine. */
 export const TOOL_EVAL_TYPES = {
@@ -97,6 +102,7 @@ export function registerToolEvalRoutes(app, { registry, manager, store, allowRun
   app.get(`${base}/update-check`, async (req, res) => {
     const spark = sparkOr404(req, res);
     if (!spark) return;
+    if (!wanEgressAllowed()) return res.status(403).json({ error: WAN_EGRESS_DISABLED });
     if (!allowRun(principalKey(req))) return rejectLimited(res, "Too many requests; try again shortly");
     res.json(await manager.checkUpdate(spark));
   });
@@ -109,6 +115,7 @@ export function registerToolEvalRoutes(app, { registry, manager, store, allowRun
   app.post(`${base}/install`, (req, res) => {
     const spark = sparkOr404(req, res);
     if (!spark) return;
+    if (!wanEgressAllowed()) return res.status(403).json({ error: WAN_EGRESS_DISABLED });
     if (!allowRun(principalKey(req))) return rejectLimited(res, "Too many requests; try again shortly");
     const extras = Array.isArray(req.body?.extras) ? req.body.extras.filter((e) => ALLOWED_EXTRAS.includes(e)) : [];
     const result = manager.install(spark, { extras, upgrade: req.body?.upgrade === true });

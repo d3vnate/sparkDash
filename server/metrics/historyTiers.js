@@ -58,8 +58,61 @@ export const UNIT_SERIES = Object.freeze([
   "netTx",
 ]);
 
-/** Per LLM endpoint. kvUsage is the 0–1 share of the engine's KV pool. */
-export const LLM_SERIES = Object.freeze(["genTps", "prefillTps", "kvUsage"]);
+/**
+ * Per LLM endpoint.
+ *
+ * Live gauges: genTps, prefillTps, kvUsage (0–1 share of the engine's KV
+ * pool), perStreamTps, requestsRunning, requestsWaiting, slotsTotal,
+ * prefillActive / decodeActive (0/1 state flags — their bucket avg is the
+ * fraction of samples in that state), cacheHitRate, mtpAcceptance (0–1),
+ * prefillProgress / generationProgress (tokens), deviceMemory (GiB),
+ * decodeEfficiency (0–1).
+ *
+ * Per-sample deltas of cumulative counters: prefillSeconds / prefillCount,
+ * decodeSeconds / decodeCount, ttftTime / ttftCount, latencyTime /
+ * latencyCount, tpotTime / tpotCount, preemptions. Their bucket avg × n is
+ * the total for the bucket.
+ *
+ * Derived per-sample: queueWait (ttftTime − prefillSeconds, seconds) and
+ * prefillShare (prefill / (queue + prefill + decode), 0–1).
+ */
+export const LLM_SERIES = Object.freeze([
+  "genTps",
+  "prefillTps",
+  "kvUsage",
+  "perStreamTps",
+  "requestsRunning",
+  "requestsWaiting",
+  "queued",
+  "idle",
+  "slotsTotal",
+  "prefillActive",
+  "decodeActive",
+  "cacheHitRate",
+  "mtpAcceptance",
+  "prefillProgress",
+  "generationProgress",
+  "deviceMemory",
+  "decodeEfficiency",
+  "prefillSeconds",
+  "prefillCount",
+  "decodeSeconds",
+  "decodeCount",
+  "ttftTime",
+  "ttftCount",
+  "latencyTime",
+  "latencyCount",
+  "tpotTime",
+  "tpotCount",
+  "preemptions",
+  "queueWait",
+  "prefillShare",
+  "overheadSeconds",
+  "promptTokens",
+  "cachedTokens",
+  "genTokens",
+  "decodeRounds",
+]);
 
 /** Series whose buckets also keep the minimum. */
 const MIN_SERIES = new Set(["memFreeMB", "memAvailableMB"]);
@@ -251,8 +304,9 @@ export function coarsen(entries, stepMs) {
 }
 
 /** `{ avg, max, min? }` of one merged stat, rounded for transport. */
-export function statOut(key, s) {
+export function statOut(key, s, withCounts = false) {
   const out = { avg: round(s.sum / s.n), max: round(s.max) };
   if (keepsMin(key)) out.min = round(s.min);
+  if (withCounts) out.n = Math.min(MAX_COUNT, s.n);
   return out;
 }

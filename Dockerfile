@@ -45,8 +45,9 @@ RUN npm prune --omit=dev --no-audit --no-fund \
 FROM ${NODE_IMAGE}
 
 # SSH client + sshpass for remote Sparks; util-linux provides nsenter for host GPU/net
+# iptables backs the default-deny WAN egress guard in scripts/egress-lockdown.sh.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client sshpass procps util-linux iproute2 \
+    openssh-client sshpass procps util-linux iproute2 iptables \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -62,6 +63,8 @@ COPY --from=builder /app/server ./server
 COPY --from=builder /app/src/shared ./src/shared
 COPY --from=builder /app/src/components/ShowcasePage/showcasePrompts.ts ./src/components/ShowcasePage/showcasePrompts.ts
 COPY --from=builder /app/config ./config
+COPY scripts/egress-lockdown.sh /usr/local/bin/egress-lockdown
+RUN chmod +x /usr/local/bin/egress-lockdown
 
 # Volume for persistent sparks.json
 VOLUME /app/config
@@ -74,4 +77,8 @@ ENV PORT=5555
 ENV LLM_PORT=8888
 ENV NODE_ENV=production
 
+# Apply the default-deny egress guard before starting Node. Bridge compose
+# files set SPARKDASH_EGRESS_LOCKDOWN=1; host-network deployments leave it off
+# because the container shares the host's network namespace.
+ENTRYPOINT ["/usr/local/bin/egress-lockdown"]
 CMD ["node", "server/index.js"]

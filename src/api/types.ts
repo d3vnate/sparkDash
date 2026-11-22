@@ -521,6 +521,18 @@ export interface UnifiedMemoryMetrics {
 }
 
 // ─── LLM metrics ─────────────────────────────────────────
+/** Normalised slot view shared by every backend. Unknown values stay null. */
+export interface LlmSlots {
+  /** Configured capacity, when the engine reports one. */
+  total: number | null;
+  running: number | null;
+  waiting: number | null;
+  /** Live state flags; counts are not fabricated when a backend omits them. */
+  prefilling: boolean;
+  decoding: boolean;
+  idle: boolean;
+}
+
 export interface LlmMetrics {
   /** The LLM port this snapshot came from — lets the UI match panels to probes by port, not array position. */
   port?: number;
@@ -544,6 +556,8 @@ export interface LlmMetrics {
   /** Occupied slots; null when the backend does not report occupancy. */
   slotsActive: number | null;
   slotsTotal: number;
+  /** Normalised slot view: engine gauges plus live prefill/decode state flags. */
+  slots?: LlmSlots | null;
   generationTps: number;
   /** How generationTps was measured when a backend exposes a fallback. */
   generationTpsSource?: "window" | "slot-mean" | "probe-sample" | "dashboard-stream" | null;
@@ -629,6 +643,39 @@ export interface LlmMetrics {
   itlP95Seconds?: number | null;
   /** vLLM speculative/MTP acceptance rate (accepted/drafted, 0–1). null when unavailable. */
   mtpAcceptanceRate?: number | null;
+  /** Cumulative prefill seconds / finished-request count (TensorFold). Differenced by the history sampler. */
+  prefillSecondsTotal?: number | null;
+  prefillCountTotal?: number | null;
+  /** Cumulative decode seconds / finished-request count. */
+  decodeSecondsTotal?: number | null;
+  decodeCountTotal?: number | null;
+  /** Cumulative TTFT seconds / count (queue wait + prefill). */
+  ttftSecondsTotal?: number | null;
+  ttftCountTotal?: number | null;
+  /** Cumulative end-to-end latency seconds / count. */
+  latencySecondsTotal?: number | null;
+  latencyCountTotal?: number | null;
+  /** Cumulative inter-token latency seconds / count. */
+  tpotSecondsTotal?: number | null;
+  tpotCountTotal?: number | null;
+  /** Engine decode rounds (one batched decode step) since start. */
+  decodeRoundsTotal?: number | null;
+  /** Cumulative prefix-cache queries / hits in prompt tokens. */
+  prefixCacheQueriesTotal?: number | null;
+  prefixCacheHitsTotal?: number | null;
+  /** Cumulative MTP draft / accepted token counters. */
+  mtpDraftedTotal?: number | null;
+  mtpAcceptedTotal?: number | null;
+  /** Device memory the engine holds now / its peak, in bytes (TensorFold CUDA). */
+  deviceMemoryBytes?: number | null;
+  deviceMemoryPeakBytes?: number | null;
+  /** Requests a client abandoned before the reply left the server. */
+  clientDisconnectionsTotal?: number | null;
+  /** Mean request latency from the cumulative latency histogram (seconds). */
+  requestLatencySeconds?: number | null;
+  /** Prefill / decode request-time p95 from their histograms (seconds). */
+  prefillP95Seconds?: number | null;
+  decodeP95Seconds?: number | null;
   /**
    * Observational exposure hint from unauthenticated probe reachability +
    * configured target host scope. null when auth status is unknown.
@@ -717,6 +764,9 @@ export interface LlmCacheHistogram {
 export interface LlmCacheHistograms {
   ttft: LlmCacheHistogram;
   latency: LlmCacheHistogram;
+  /** Prefill / decode request-time histograms, when the build exports them. */
+  prefill?: LlmCacheHistogram;
+  decode?: LlmCacheHistogram;
 }
 
 /** One UTC day of busy tok/s rollups (null avg = no busy samples). */
@@ -1383,6 +1433,8 @@ export interface HistoryStat {
   avg: number;
   max: number;
   min?: number;
+  /** Samples behind the bucket; only the insights endpoint asks for it. */
+  n?: number;
 }
 
 /** Unit-level series: %, °C, W, MB, bytes/s. */
@@ -1402,7 +1454,42 @@ export type HistoryUnitSeries =
   | "netTx";
 
 /** Per LLM endpoint: tok/s, and the KV pool fill as 0–1. */
-export type HistoryLlmSeries = "genTps" | "prefillTps" | "kvUsage";
+export type HistoryLlmSeries =
+  | "genTps"
+  | "prefillTps"
+  | "kvUsage"
+  | "perStreamTps"
+  | "requestsRunning"
+  | "requestsWaiting"
+  | "queued"
+  | "idle"
+  | "slotsTotal"
+  | "prefillActive"
+  | "decodeActive"
+  | "cacheHitRate"
+  | "mtpAcceptance"
+  | "prefillProgress"
+  | "generationProgress"
+  | "deviceMemory"
+  | "decodeEfficiency"
+  | "prefillSeconds"
+  | "prefillCount"
+  | "decodeSeconds"
+  | "decodeCount"
+  | "ttftTime"
+  | "ttftCount"
+  | "latencyTime"
+  | "latencyCount"
+  | "tpotTime"
+  | "tpotCount"
+  | "preemptions"
+  | "queueWait"
+  | "prefillShare"
+  | "overheadSeconds"
+  | "promptTokens"
+  | "cachedTokens"
+  | "genTokens"
+  | "decodeRounds";
 
 /** A bucket; a series the unit did not report in it is absent (a gap). */
 export type HistoryPoint = { t: number } & Partial<Record<HistoryUnitSeries, HistoryStat>>;
@@ -1505,6 +1592,145 @@ export interface MetricsHistoryCache {
 }
 
 export type MetricsHistoryResponse = MetricsHistoryData | { enabled: false };
+
+// ─── LLM server insights ─────────────────────────────────
+/** One queue-depth bin: what decode and request time look like at that depth. */
+export interface LlmQueueBin {
+  id: string;
+  label: string;
+  buckets: number;
+  requests: number;
+  waitingMean: number | null;
+  runningMean: number | null;
+  perStreamTps: number | null;
+  genTps: number | null;
+  ttftSeconds: number | null;
+  prefillSeconds: number | null;
+  decodeSeconds: number | null;
+  cacheHitRate: number | null;
+  kvUsage: number | null;
+  decodeEfficiency: number | null;
+  prefillActiveFraction: number | null;
+  decodeActiveFraction: number | null;
+  prefillShare: number | null;
+}
+
+export interface LlmQueueKnee {
+  waiting: string;
+  baselineWaiting: string;
+  baselinePerStreamTps: number;
+  baselinePrefillSeconds: number | null;
+  perStreamTps: number;
+  buckets: number;
+  collapse: {
+    waiting: string;
+    perStreamTps: number | null;
+    ttftSeconds: number | null;
+    prefillSeconds: number | null;
+  } | null;
+}
+
+export interface LlmRequestTime {
+  requests: number;
+  queueSecondsPerRequest: number | null;
+  prefillSecondsPerRequest: number | null;
+  decodeSecondsPerRequest: number | null;
+  ttftSecondsPerRequest: number | null;
+  latencySecondsPerRequest: number | null;
+  queueShare: number | null;
+  prefillShare: number | null;
+  decodeShare: number | null;
+  overheadShare: number | null;
+  meanInterTokenSeconds: number | null;
+  perStreamTpsFromTpot: number | null;
+}
+
+export interface LlmCacheInsight {
+  hitRate: number | null;
+  hitRateGauge: number | null;
+  promptTokens: number | null;
+  cachedTokens: number | null;
+  computedTokens: number | null;
+  targetHitRate: number;
+  prefillSavedPerRequest: number | null;
+  prefillSavedTotal: number | null;
+  telemetry: LlmCacheMetrics["status"] | null;
+}
+
+export interface LlmKvInsight {
+  usageMean: number | null;
+  usageMax: number | null;
+  deviceMeanGb: number | null;
+  deviceMaxGb: number | null;
+  preemptions: number | null;
+  clientDisconnections: number | null;
+}
+
+export interface LlmMtpInsight {
+  acceptance: number | null;
+  tokensPerRound: number | null;
+  decodeTps: number | null;
+  rounds: number | null;
+}
+
+export interface LlmWorkloadInsight {
+  promptTokens: number | null;
+  completionTokens: number | null;
+  promptPerCompletion: number | null;
+  cachedShare: number | null;
+  promptPerRequest: number | null;
+  outputPerRequest: number | null;
+}
+
+export interface LlmTimeInState {
+  prefillFraction: number | null;
+  decodeFraction: number | null;
+  queuedFraction: number | null;
+  idleFraction: number | null;
+  runningMean: number | null;
+  waitingMean: number | null;
+  waitingMax: number | null;
+}
+
+export type LlmInsightKind =
+  | "queueKnee"
+  | "queuePrefill"
+  | "requestBreakdown"
+  | "cacheGap"
+  | "cacheTelemetryMissing"
+  | "kvPressure"
+  | "mtpEfficiency"
+  | "longContext";
+
+/** Advisory finding; `params` are numeric/string values for the i18n template. */
+export interface LlmInsight {
+  kind: LlmInsightKind;
+  severity: "info" | "warn";
+  params: Record<string, number | string | null>;
+}
+
+export interface LlmInsightsData {
+  enabled: true;
+  port: number;
+  range: MetricsHistoryRange;
+  stepMs: number;
+  from: number;
+  to: number;
+  available: boolean;
+  reason: string | null;
+  sampleBuckets: number;
+  queueBins: LlmQueueBin[];
+  knee: LlmQueueKnee | null;
+  requestTime: LlmRequestTime | null;
+  cache: LlmCacheInsight | null;
+  kv: LlmKvInsight | null;
+  mtp: LlmMtpInsight | null;
+  workload: LlmWorkloadInsight | null;
+  timeInState: LlmTimeInState | null;
+  insights: LlmInsight[];
+}
+
+export type LlmInsightsResponse = LlmInsightsData | { enabled: false };
 
 export interface SparksListResponse {
   sparks: SparkConfig[];

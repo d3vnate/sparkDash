@@ -6,6 +6,7 @@ import path from "node:path";
 import express from "express";
 import {
   FleetEnergyTracker as BaseFleetEnergyTracker,
+  DEFAULT_FLUSH_INTERVAL_MS,
   estimateNodeWatts,
 } from "../../energy/FleetEnergyTracker.js";
 
@@ -404,7 +405,7 @@ test("fleet-energy membership changes invalidate aggregates until restart", () =
   assert.deepEqual(changed.hourlyWatts24h, Array(24).fill(null));
 });
 
-test("fleet-energy runtime samples without WebSockets and schedules decorated ticks every 2000ms", () => {
+test("fleet-energy runtime samples without WebSockets and schedules decorated ticks at the configured cadence", () => {
   const createFleetEnergyRuntime = runtimeFunction("createFleetEnergyRuntime");
   const now = 50_000;
   const snapshots = [realShapeSnapshot("node-a")];
@@ -439,7 +440,7 @@ test("fleet-energy runtime samples without WebSockets and schedules decorated ti
   runtime.start();
   assert.equal(records.length, 1, "start performs one immediate sample even without WS clients");
   assert.equal(intervalCalls, 1, "start is idempotent");
-  assert.equal(scheduled.intervalMs, 2_000);
+  assert.equal(scheduled.intervalMs, fleetEnergyRuntime.ENERGY_SAMPLE_INTERVAL_MS);
   assert.equal(records[0].inputs[0].telemetryFresh, true);
   assert.equal(Object.hasOwn(snapshots[0], "telemetryFresh"), false);
 
@@ -1679,7 +1680,7 @@ test("rename failure preserves the prior target and a dirty retry succeeds at mo
   assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);
 });
 
-test("persistence uses mode 0600 and auto-flush cadence is capped at 30 seconds", (t) => {
+test("persistence uses mode 0600 and auto-flush cadence is capped at the configured default", (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkdash-energy-mode-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const filePath = path.join(dir, "fleet-energy.json");
@@ -1700,7 +1701,7 @@ test("persistence uses mode 0600 and auto-flush cadence is capped at 30 seconds"
     },
   });
 
-  assert.equal(scheduled.intervalMs, 30_000);
+  assert.equal(scheduled.intervalMs, Math.min(60_000, DEFAULT_FLUSH_INTERVAL_MS));
   tracker.record(fleetSnapshots(100, { outputTokens: 0 }), 0);
   scheduled.callback();
   assert.equal(fs.statSync(filePath).mode & 0o777, 0o600);

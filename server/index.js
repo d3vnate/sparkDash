@@ -69,6 +69,7 @@ import {
 import { closeLlmStreamAgent } from "./collectors/LlmStreaming.js";
 import { compareSemver, getLatestRelease } from "./collectors/HermesReleases.js";
 import { createModelPricesHandler } from "./prices/ModelPrices.js";
+import { wanEgressAllowed } from "./net/egress.js";
 import { ALERTS_JSON_PATH, FLEET_ENERGY_JSON_PATH, FLEET_ENERGY_MONTHLY_JSON_PATH, MAX_ACTIVE_BENCH_JOBS, METRICS_HISTORY_JSON_PATH, STORAGE_ACKS_JSON_PATH, STORAGE_SCANS_JSON_PATH, STORAGE_SUDO_JSON_PATH } from "./config.js";
 import { createAlertsRuntime, registerAlertRoutes } from "./alerts/runtime.js";
 import { FleetEnergyTracker } from "./energy/FleetEnergyTracker.js";
@@ -76,6 +77,8 @@ import { EventLog } from "./events/EventLog.js";
 import { planListenRetry } from "./listenRetry.js";
 import { UnitHistory } from "./metrics/UnitHistory.js";
 import { createUnitHistoryRuntime, registerUnitHistoryRoutes } from "./metrics/UnitHistoryRuntime.js";
+import { HISTORY_RANGES } from "./metrics/historyTiers.js";
+import { computeLlmInsights } from "./metrics/llmInsights.js";
 import { CacheHistory } from "./metrics/CacheHistory.js";
 import { LauncherStore } from "./llmlaunch/LauncherStore.js";
 import { LauncherManager, defaultExec } from "./llmlaunch/LauncherManager.js";
@@ -463,7 +466,9 @@ function startMonitor(spark) {
     // Tensor-parallel workers use measured progress from their explicitly paired head.
     resolveHeadLlmProgressAt: (headId) => monitors.get(headId)?.llmProgressAt() ?? null,
     // Settings → Poll interval drives the collectors, not just the broadcast.
-    pollIntervalMs: getSettings().pollIntervalMs,
+    // A unit may pin its own slower cadence (e.g. a Windows box whose PowerShell
+    // probes are expensive); otherwise the global setting applies.
+    pollIntervalMs: spark.pollIntervalMs || getSettings().pollIntervalMs,
     // Settings → Stream-sample engines without gauges (Pico): the probe measures
     // decode from its own tiny streamed completion, never while a bench, showcase
     // or model launch owns the unit.
@@ -828,7 +833,7 @@ app.put("/api/settings", (req, res) => {
     // (in place — no restart, no lost backoff state) and the broadcast timer.
     if (patch.pollIntervalMs != null) {
       for (const monitor of monitors.values()) {
-        monitor.setPollInterval(newSettings.pollIntervalMs);
+        monitor.setPollInterval(monitor.spark.pollIntervalMs || newSettings.pollIntervalMs);
       }
       restartBroadcast();
     }
@@ -1525,6 +1530,48 @@ app.get("/api/sparks/:id/llm/daily", (req, res) => {
   let days = req.query.days != null ? Number(req.query.days) : 14;
   if (!Number.isFinite(days)) days = 14;
   res.json(llmDaily.getSeries(spark.id, port, { days }));
+});
+
+/**
+ * LLM server insights: queue-depth bins, the queue-vs-decode knee, request-time
+ * breakdown, cache savings, KV/device pressure and MTP efficiency for one
+ * endpoint. Query: port (required for multi-port), range (1h|6h|24h|7d|30d,
+ * default 24h). `{ enabled: false }` while metrics history is off.
+ */
+app.get("/api/sparks/:id/llm/insights", (req, res) => {
+  const spark = registry.getSpark(req.params.id);
+  if (!spark) return res.status(404).json({ error: "Spark not found" });
+  const ports =
+    Array.isArray(spark.llmPorts) && spark.llmPorts.length
+      ? spark.llmPorts
+      : [resolveLlmPort(spark)];
+  const port = req.query.port != null ? Number(req.query.port) : ports[0];
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return res.status(400).json({ error: "Invalid port" });
+  }
+  const range = req.query.range ?? "24h";
+  if (typeof range !== "string" || !Object.hasOwn(HISTORY_RANGES, range)) {
+    return res.status(400).json({
+      error: `range must be one of: ${Object.keys(HISTORY_RANGES).join(", ")}`,
+    });
+  }
+  if (!metricsHistoryEnabled()) return res.json({ enabled: false });
+  const atMs = Date.now();
+  const history = unitHistory.query(spark.id, range, atMs, { withCounts: true });
+  const entry = history.llm.find((e) => e.port === port) ?? { port, points: [] };
+  const snap = monitors.get(spark.id)?.snapshot() ?? null;
+  const live = Array.isArray(snap?.metrics?.llm)
+    ? snap.metrics.llm.find((e) => e.port === port) ?? null
+    : null;
+  res.json({
+    enabled: true,
+    port,
+    range,
+    stepMs: history.stepMs,
+    from: history.from,
+    to: history.to,
+    ...computeLlmInsights({ points: entry.points, stepMs: history.stepMs, live }),
+  });
 });
 
 /**
@@ -2933,6 +2980,16 @@ if (!startupPreflight.fatal) {
     console.log(`[sparkDash] WebSocket endpoint ws://${BIND_HOST}:${PORT}/ws`);
     const { authMode } = inspectHealth(BIND_HOST);
     console.log(`[sparkDash] bind=${BIND_HOST} auth=${authMode}`);
+    console.log(
+      `[sparkDash] egress: ${
+        wanEgressAllowed()
+          ? "WAN allowed by operator (SPARKDASH_ALLOW_WAN_EGRESS=1)"
+          : "WAN blocked; LAN/tailnet/loopback only"
+      }`
+    );
+    console.log(
+      `[sparkDash] data handling: collected telemetry is stored only in ${path.join(ROOT, "config")}; no WAN or third-party egress`
+    );
     if (authMode === "open-remote") {
       console.warn("[sparkDash] WARNING: remote bind without SPARKDASH_TOKEN is OPEN — anyone who can reach this port can change settings and power units off. Set SPARKDASH_TOKEN to require a token.");
     }

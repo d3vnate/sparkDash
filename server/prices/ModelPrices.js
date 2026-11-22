@@ -12,6 +12,7 @@
 import fs from "fs";
 import { atomicWrite } from "../util/atomicWrite.js";
 import { MODEL_PRICES_JSON_PATH, MODEL_PRICES_FETCH } from "../config.js";
+import { assertLocalEgress } from "../net/egress.js";
 
 export const LITELLM_PRICES_URL =
   "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json";
@@ -117,7 +118,14 @@ export function createModelPricesHandler(opts = {}) {
   const ttlMs = opts.ttlMs ?? CACHE_TTL_MS;
   const retryMs = opts.retryMs ?? RETRY_MS;
   const now = opts.now ?? Date.now;
-  const fetchJson = opts.fetchJson ?? fetchJsonCapped;
+  // The default fetch is gated by the default-deny egress policy. Injected
+  // fetchers (tests, alternative catalogs) keep their own responsibility.
+  const fetchJson =
+    opts.fetchJson ??
+    (async (url) => {
+      await assertLocalEgress(new URL(url).hostname);
+      return fetchJsonCapped(url);
+    });
   const log = opts.log ?? console;
 
   let mem = null; // { at, payload } — last good fetch, fresh for ttlMs

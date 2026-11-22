@@ -21,6 +21,7 @@ import { Agent, fetch as undiciFetch } from "undici";
 import { severityRank } from "./conditions.js";
 import { pinnedLookup } from "../validate.js";
 import { OutboundPolicyError, resolveChannelTarget } from "./outbound.js";
+import { isLocalAddress, wanEgressAllowed } from "../net/egress.js";
 import { capText } from "./text.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -345,6 +346,12 @@ export class Notifier {
       const { url, init } = buildRequest(channel, group, this._now());
       const target = new URL(url);
       const addresses = await resolveChannelTarget(target, this._lookup ? { lookup: this._lookup } : undefined);
+      // Alert payloads carry unit names and remote error text: all untrusted.
+      // Keep them inside the operator's network unless WAN egress was explicitly
+      // enabled (the channel itself may be a public ntfy/Slack host).
+      if (!wanEgressAllowed() && addresses.some((address) => !isLocalAddress(address))) {
+        throw new SendFailure("blocked: destination is outside the local network");
+      }
       agent = new Agent({ connect: { lookup: pinnedLookup(addresses) } });
       const res = await this._fetch(url, {
         ...init,

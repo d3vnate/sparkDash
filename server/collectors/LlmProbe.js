@@ -293,8 +293,9 @@ export class LlmProbe {
     this.cache = null;
     /**
      * Cumulative TTFT / request-latency histogram buckets from the same TensorFold /metrics
-     * read, for the history sampler to difference into window quantiles. Null when absent.
-     * @type {{ ttft: { edges: number[], counts: number[] }, latency: { edges: number[], counts: number[] } } | null}
+     * read, for the history sampler to difference into window quantiles. Prefill/decode
+     * histograms are optional additions for the LLM server view. Null when absent.
+     * @type {{ ttft: { edges: number[], counts: number[] }, latency: { edges: number[], counts: number[] }, prefill?: { edges: number[], counts: number[] }, decode?: { edges: number[], counts: number[] } } | null}
      */
     this.cacheHistograms = null;
     /** Allocated KV-cache pool, tokens (vLLM `cache_config_info`). */
@@ -321,6 +322,33 @@ export class LlmProbe {
     this.itlP95Seconds = null;
     /** Speculative/MTP acceptance rate 0–1 (accepted/drafted). */
     this.mtpAcceptanceRate = null;
+
+    // Cumulative histogram sums/counts and engine counters, for the LLM history.
+    // The probe exposes the raw cumulative values; the history sampler differences
+    // them into per-bucket time/event totals.
+    this.prefillSecondsTotal = null;
+    this.prefillCountTotal = null;
+    this.decodeSecondsTotal = null;
+    this.decodeCountTotal = null;
+    this.ttftSecondsTotal = null;
+    this.ttftCountTotal = null;
+    this.latencySecondsTotal = null;
+    this.latencyCountTotal = null;
+    this.tpotSecondsTotal = null;
+    this.tpotCountTotal = null;
+    this.decodeRoundsTotal = null;
+    this.prefixCacheQueriesTotal = null;
+    this.prefixCacheHitsTotal = null;
+    this.mtpDraftedTotal = null;
+    this.mtpAcceptedTotal = null;
+    this.deviceMemoryBytes = null;
+    this.deviceMemoryPeakBytes = null;
+    this.clientDisconnectionsTotal = null;
+    /** Mean request latency from the cumulative latency histogram. */
+    this.requestLatencySeconds = null;
+    /** P95 prefill/decode request time from the same histograms. */
+    this.prefillP95Seconds = null;
+    this.decodeP95Seconds = null;
     /**
      * False when the engine answered but this poll's stats could not be read (an error status, or a body with no
      * counters). The rates are then unknown, not zero: history, Prometheus and the UI leave them out.
@@ -595,6 +623,27 @@ export class LlmProbe {
     this.e2eP95Seconds = null;
     this.itlP95Seconds = null;
     this.mtpAcceptanceRate = null;
+    this.prefillSecondsTotal = null;
+    this.prefillCountTotal = null;
+    this.decodeSecondsTotal = null;
+    this.decodeCountTotal = null;
+    this.ttftSecondsTotal = null;
+    this.ttftCountTotal = null;
+    this.latencySecondsTotal = null;
+    this.latencyCountTotal = null;
+    this.tpotSecondsTotal = null;
+    this.tpotCountTotal = null;
+    this.decodeRoundsTotal = null;
+    this.prefixCacheQueriesTotal = null;
+    this.prefixCacheHitsTotal = null;
+    this.mtpDraftedTotal = null;
+    this.mtpAcceptedTotal = null;
+    this.deviceMemoryBytes = null;
+    this.deviceMemoryPeakBytes = null;
+    this.clientDisconnectionsTotal = null;
+    this.requestLatencySeconds = null;
+    this.prefillP95Seconds = null;
+    this.decodeP95Seconds = null;
     this.measurementValid = true;
     this.measurementError = null;
     this._seedNext = false;
@@ -2730,11 +2779,22 @@ export class LlmProbe {
       };
       const ttft = hist95("time_to_first_token_seconds");
       const latency = hist95("request_latency_seconds");
+      const prefillHist = hist95("request_prefill_seconds");
+      const decodeHist = hist95("request_decode_seconds");
       this.ttftP95Seconds = ttft.value;
       this.e2eP95Seconds = latency.value;
       this.itlP95Seconds = hist95("request_time_per_output_token_seconds").value;
+      this.prefillP95Seconds = prefillHist.value;
+      this.decodeP95Seconds = decodeHist.value;
       this.cacheHistograms =
-        ttft.cumulative && latency.cumulative ? { ttft: ttft.cumulative, latency: latency.cumulative } : null;
+        ttft.cumulative && latency.cumulative
+          ? {
+              ttft: ttft.cumulative,
+              latency: latency.cumulative,
+              ...(prefillHist.cumulative ? { prefill: prefillHist.cumulative } : {}),
+              ...(decodeHist.cumulative ? { decode: decodeHist.cumulative } : {}),
+            }
+          : null;
 
       const mean = (metric) => {
         const sum = this._getPromMetric(txt, `tensorfold:${metric}_sum`);
@@ -2743,9 +2803,39 @@ export class LlmProbe {
         return Math.round((sum / count) * 1000) / 1000;
       };
       this.ttftSeconds = mean("time_to_first_token_seconds");
+      this.requestLatencySeconds = mean("request_latency_seconds");
+
+      const pair = (primary, alias) => {
+        const sum = m(`${primary}_sum`) ?? m(`${alias}_sum`);
+        const count = m(`${primary}_count`) ?? m(`${alias}_count`);
+        return {
+          sum: Number.isFinite(sum) && sum >= 0 ? sum : null,
+          count: Number.isFinite(count) && count >= 0 ? count : null,
+        };
+      };
+      const prefillPair = pair("request_prefill_seconds", "request_prefill_time_seconds");
+      this.prefillSecondsTotal = prefillPair.sum;
+      this.prefillCountTotal = prefillPair.count;
+      const decodePair = pair("request_decode_seconds", "request_decode_time_seconds");
+      this.decodeSecondsTotal = decodePair.sum;
+      this.decodeCountTotal = decodePair.count;
+      const ttftPair = pair("time_to_first_token_seconds", "time_to_first_token_seconds");
+      this.ttftSecondsTotal = ttftPair.sum;
+      this.ttftCountTotal = ttftPair.count;
+      const latencyPair = pair("request_latency_seconds", "e2e_request_latency_seconds");
+      this.latencySecondsTotal = latencyPair.sum;
+      this.latencyCountTotal = latencyPair.count;
+      const tpotPair = pair("request_time_per_output_token_seconds", "request_time_per_output_token_seconds");
+      this.tpotSecondsTotal = tpotPair.sum;
+      this.tpotCountTotal = tpotPair.count;
+
+      const decodeRounds = m("decode_rounds_total");
+      if (Number.isFinite(decodeRounds) && decodeRounds >= 0) this.decodeRoundsTotal = decodeRounds;
 
       const queries = m("prefix_cache_queries_total");
       const hits = m("prefix_cache_hits_total");
+      if (Number.isFinite(queries) && queries >= 0) this.prefixCacheQueriesTotal = queries;
+      if (Number.isFinite(hits) && hits >= 0) this.prefixCacheHitsTotal = hits;
       this.prefixCacheHitRate =
         Number.isFinite(queries) && queries > 0 && Number.isFinite(hits)
           ? Math.max(0, Math.min(1, hits / queries))
@@ -2754,6 +2844,19 @@ export class LlmProbe {
       const preemptions = m("preemptions_total");
       this.preemptionsTotal =
         Number.isFinite(preemptions) && preemptions >= 0 ? Math.round(preemptions) : null;
+
+      const draftedTotal = m("mtp_drafted_total");
+      const acceptedTotal = m("mtp_accepted_total");
+      if (Number.isFinite(draftedTotal) && draftedTotal >= 0) this.mtpDraftedTotal = draftedTotal;
+      if (Number.isFinite(acceptedTotal) && acceptedTotal >= 0) this.mtpAcceptedTotal = acceptedTotal;
+
+      const deviceMemory = m("device_memory_bytes");
+      const devicePeak = m("device_memory_peak_bytes");
+      if (Number.isFinite(deviceMemory) && deviceMemory >= 0) this.deviceMemoryBytes = deviceMemory;
+      if (Number.isFinite(devicePeak) && devicePeak >= 0) this.deviceMemoryPeakBytes = devicePeak;
+
+      const disconnections = m("client_disconnections_total");
+      if (Number.isFinite(disconnections) && disconnections >= 0) this.clientDisconnectionsTotal = disconnections;
     }
 
     // A multi-pool engine exports one 0–1 ratio per pool/stream. `m()` sums every
@@ -2926,8 +3029,16 @@ export class LlmProbe {
       // decode has been produced yet. (Queue-only waits keep running at 0.)
       const openReq = Number.isFinite(this.requestsRunning) && this.requestsRunning > 0;
       const genRunning = m("generation_tokens_running");
-      if (openReq && Number.isFinite(genRunning)) {
-        this.prefillActive = genRunning === 0;
+      if (openReq) {
+        // TensorFold's /health here is just {"status":"ok"}: the live decode
+        // flag has to come from the rate the counters produced this poll.
+        const decoding = Number.isFinite(this.generationTps) && this.generationTps > 0;
+        this.decodeActive = decoding;
+        // A prompt is being processed when a lane holds no generated tokens,
+        // or when the live prompt-position gauge is published at all.
+        this.prefillActive =
+          (Number.isFinite(genRunning) && genRunning === 0) ||
+          this.prefillProgressTokens != null;
       }
     }
   }
@@ -3144,6 +3255,7 @@ export class LlmProbe {
       // the card shows "prefilling" instead of a zero rate.
       this.prefillActive =
         Number.isFinite(running) && running > 0 && deltaOut <= 0 && !completedPrefill;
+      this.decodeActive = Number.isFinite(running) && running > 0 && !this.prefillActive;
       // Live mean TTFT over the last poll window from histogram sum/count deltas.
       // Computed BEFORE lastTtftSum is advanced so the delta is real, not 0.
       const ttftCount = this._getVllmMetric(txt, "time_to_first_token_seconds_count");
@@ -3207,6 +3319,25 @@ export class LlmProbe {
       prefixHits != null && prefixQueries != null && prefixQueries > 0
         ? Math.round((prefixHits / prefixQueries) * 10000) / 10000
         : null;
+    if (prefixHits != null && prefixHits >= 0) this.prefixCacheHitsTotal = prefixHits;
+    if (prefixQueries != null && prefixQueries >= 0) this.prefixCacheQueriesTotal = prefixQueries;
+
+    // Cumulative histogram sums/counts for the LLM server view. Names are
+    // optional: a build that publishes none leaves the fields null.
+    const cumulative = (field, name) => {
+      const value = this._getVllmMetric(txt, name);
+      if (value != null && Number.isFinite(value) && value >= 0) this[field] = value;
+    };
+    cumulative("ttftSecondsTotal", "time_to_first_token_seconds_sum");
+    cumulative("ttftCountTotal", "time_to_first_token_seconds_count");
+    cumulative("latencySecondsTotal", "e2e_request_latency_seconds_sum");
+    cumulative("latencyCountTotal", "e2e_request_latency_seconds_count");
+    cumulative("prefillSecondsTotal", "request_prefill_time_seconds_sum");
+    cumulative("prefillCountTotal", "request_prefill_time_seconds_count");
+    cumulative("decodeSecondsTotal", "request_decode_time_seconds_sum");
+    cumulative("decodeCountTotal", "request_decode_time_seconds_count");
+    cumulative("tpotSecondsTotal", "request_time_per_output_token_seconds_sum");
+    cumulative("tpotCountTotal", "request_time_per_output_token_seconds_count");
 
     const mtpAccepted = this._getVllmMetric(txt, "spec_decode_num_accepted_tokens_total");
     const mtpDrafted = this._getVllmMetric(txt, "spec_decode_num_draft_tokens_total");
@@ -3214,6 +3345,8 @@ export class LlmProbe {
       mtpAccepted != null && mtpDrafted != null && mtpDrafted > 0
         ? Math.round((mtpAccepted / mtpDrafted) * 10000) / 10000
         : null;
+    if (mtpAccepted != null && mtpAccepted >= 0) this.mtpAcceptedTotal = mtpAccepted;
+    if (mtpDrafted != null && mtpDrafted >= 0) this.mtpDraftedTotal = mtpDrafted;
   }
 
   /**
@@ -4093,6 +4226,19 @@ export class LlmProbe {
       gpuMemoryUtilization: this.gpuMemoryUtilization,
       slotsActive: this.slotsActive,
       slotsTotal: this.slotsTotal,
+      /**
+       * Normalised slot view for the LLM server page. `prefilling`/`decoding`
+       * are live state flags (a backend may not publish lane counts), while
+       * running/waiting are the engine's own gauges. A null is unknown, never 0.
+       */
+      slots: {
+        total: this.slotsTotal > 0 ? this.slotsTotal : null,
+        running: this.requestsRunning,
+        waiting: this.requestsWaiting,
+        prefilling: this.prefillActive === true,
+        decoding: this.decodeActive === true,
+        idle: this.requestsRunning === 0 && this.requestsWaiting === 0,
+      },
       generationTps: this.generationTps,
       perStreamTps: this.perStreamTps,
       perStreamPrefillTps: this.perStreamPrefillTps,
@@ -4126,6 +4272,27 @@ export class LlmProbe {
       e2eP95Seconds: this.e2eP95Seconds,
       itlP95Seconds: this.itlP95Seconds,
       mtpAcceptanceRate: this.mtpAcceptanceRate,
+      prefillSecondsTotal: this.prefillSecondsTotal,
+      prefillCountTotal: this.prefillCountTotal,
+      decodeSecondsTotal: this.decodeSecondsTotal,
+      decodeCountTotal: this.decodeCountTotal,
+      ttftSecondsTotal: this.ttftSecondsTotal,
+      ttftCountTotal: this.ttftCountTotal,
+      latencySecondsTotal: this.latencySecondsTotal,
+      latencyCountTotal: this.latencyCountTotal,
+      tpotSecondsTotal: this.tpotSecondsTotal,
+      tpotCountTotal: this.tpotCountTotal,
+      decodeRoundsTotal: this.decodeRoundsTotal,
+      prefixCacheQueriesTotal: this.prefixCacheQueriesTotal,
+      prefixCacheHitsTotal: this.prefixCacheHitsTotal,
+      mtpDraftedTotal: this.mtpDraftedTotal,
+      mtpAcceptedTotal: this.mtpAcceptedTotal,
+      deviceMemoryBytes: this.deviceMemoryBytes,
+      deviceMemoryPeakBytes: this.deviceMemoryPeakBytes,
+      clientDisconnectionsTotal: this.clientDisconnectionsTotal,
+      requestLatencySeconds: this.requestLatencySeconds,
+      prefillP95Seconds: this.prefillP95Seconds,
+      decodeP95Seconds: this.decodeP95Seconds,
       measurementValid: this.measurementValid,
       measurementError: this.measurementError,
       posture: this._buildPosture(),
@@ -4146,6 +4313,14 @@ export class LlmProbe {
       gpuMemoryUtilization: null,
       slotsActive: 0,
       slotsTotal: 0,
+      slots: {
+        total: null,
+        running: null,
+        waiting: null,
+        prefilling: false,
+        decoding: false,
+        idle: false,
+      },
       generationTps: 0,
       perStreamTps: null,
       perStreamPrefillTps: null,
@@ -4177,6 +4352,27 @@ export class LlmProbe {
       e2eP95Seconds: null,
       itlP95Seconds: null,
       mtpAcceptanceRate: null,
+      prefillSecondsTotal: null,
+      prefillCountTotal: null,
+      decodeSecondsTotal: null,
+      decodeCountTotal: null,
+      ttftSecondsTotal: null,
+      ttftCountTotal: null,
+      latencySecondsTotal: null,
+      latencyCountTotal: null,
+      tpotSecondsTotal: null,
+      tpotCountTotal: null,
+      decodeRoundsTotal: null,
+      prefixCacheQueriesTotal: null,
+      prefixCacheHitsTotal: null,
+      mtpDraftedTotal: null,
+      mtpAcceptedTotal: null,
+      deviceMemoryBytes: null,
+      deviceMemoryPeakBytes: null,
+      clientDisconnectionsTotal: null,
+      requestLatencySeconds: null,
+      prefillP95Seconds: null,
+      decodeP95Seconds: null,
       measurementValid: true,
       measurementError: null,
       posture: this._buildPosture(),

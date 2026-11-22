@@ -1333,6 +1333,12 @@ export class SystemCollector {
     return { used, total };
   }
 
+  /** Configured GPU-pool ceiling in MiB, or 0 when the unit has no override. */
+  _configuredVramTotalMB() {
+    const n = Number(this.spark?.vramTotalMb);
+    return Number.isFinite(n) && n > 0 ? Math.round(n) : 0;
+  }
+
   /**
    * Cache key for a compute app. One PID can hold memory on several GPUs
    * (llama.cpp with a layer split does), so the key carries the GPU uuid.
@@ -2221,6 +2227,13 @@ export class SystemCollector {
           totalMB = memTotalMB;
           resolvedCliVram = { ...cliVram, total: totalMB, available: Math.max(0, totalMB - usedMB) };
         }
+        // Optional override for firmware-carved pools whose driver capacity is
+        // unreadable or under-reported (a Windows UMA iGPU, for example).
+        const overrideTotalMB = this._configuredVramTotalMB();
+        if (overrideTotalMB > 0) {
+          totalMB = overrideTotalMB;
+          resolvedCliVram = { ...resolvedCliVram, total: totalMB, available: Math.max(0, totalMB - usedMB) };
+        }
         availableMB = totalMB > 0 ? Math.max(0, totalMB - usedMB) : 0;
       } else {
         // GB10 shared HBM pool: prefer the OS-visible pool (MemTotal) as the total,
@@ -3036,7 +3049,9 @@ export class SystemCollector {
       const MB = 1024 * 1024;
       return disks.map((d) => {
         const c = diskIo?.get(String(d.id).toUpperCase());
-        const io = c ? this._diskRate(d.id, c.readBytes, c.writtenBytes, c.atMs, 1) : { readSpeed: 0, writeSpeed: 0 };
+        const io = c
+          ? { readSpeed: Math.max(0, Math.round(c.readBytes)), writeSpeed: Math.max(0, Math.round(c.writtenBytes)) }
+          : { readSpeed: 0, writeSpeed: 0 };
         const total = Math.round(d.totalBytes / MB);
         const available = Math.round(d.freeBytes / MB);
         const used = Math.max(0, total - available);
@@ -3061,19 +3076,13 @@ export class SystemCollector {
   async _getWindowsNetwork() {
     try {
       const { adapters, defaultInterface } = await this._windowsSystem();
-      const now = Date.now();
       const interfaces = [];
       for (const a of adapters) {
         if (a.virtual || a.rxBytes == null || a.txBytes == null) continue;
-        const last = this.lastNetworkStats.get(a.name) || { rxBytes: a.rxBytes, txBytes: a.txBytes, time: now };
-        const dt = (now - last.time) / 1000;
-        const rx = dt > 0 ? (a.rxBytes - last.rxBytes) / dt : 0;
-        const tx = dt > 0 ? (a.txBytes - last.txBytes) / dt : 0;
-        this.lastNetworkStats.set(a.name, { rxBytes: a.rxBytes, txBytes: a.txBytes, time: now });
         interfaces.push({
           name: a.name,
-          rxSpeed: Math.max(0, Math.round(rx)),
-          txSpeed: Math.max(0, Math.round(tx)),
+          rxSpeed: Math.max(0, Math.round(a.rxBytes)),
+          txSpeed: Math.max(0, Math.round(a.txBytes)),
           ip: a.ip,
           operstate: /^up$/i.test(a.status) ? "up" : /disconnected|down/i.test(a.status) ? "down" : "unknown",
           disabled: false,
@@ -3102,9 +3111,32 @@ export class SystemCollector {
         this._windowsRun("gpu", WINDOWS_GPU_SCRIPT),
       ]);
       const { memory } = splitWindowsGpuOutput(gpuRaw);
-      const { used: gpuUsed } = this._sumVram(this._parseVramLines(memory));
+      const { used: gpuUsed, total: gpuTotal } = this._sumVram(this._parseVramLines(memory));
       const gpuUsedMB = Math.round(gpuUsed || 0);
+      const gpuTotalMB = Math.round(gpuTotal || 0);
       const totalMB = system.totalMB;
+
+      // A firmware-carved GPU pool (a Strix Halo can reserve 96 GB of 128 GB) is
+      // not drawn from the RAM Windows reports. Adding the GPU's share to that
+      // smaller pool would always read as 100% full, so judge the carved pool on
+      // its own instead. The driver's registry capacity is authoritative; the
+      // per-unit override covers hosts where it is unreadable.
+      const poolTotalMB = gpuTotalMB > 0 ? gpuTotalMB : this._configuredVramTotalMB();
+      if (poolTotalMB > totalMB) {
+        const usedMB = Math.min(gpuUsedMB, poolTotalMB);
+        const percentage = Math.round((usedMB / poolTotalMB) * 100);
+        return {
+          total: poolTotalMB,
+          gpuUsed: gpuUsedMB,
+          cpuUsed: 0,
+          used: usedMB,
+          available: Math.max(0, poolTotalMB - gpuUsedMB),
+          percentage,
+          oomRisk: percentage > 85 ? "high" : percentage > 60 ? "medium" : "low",
+          bandwidth: { current: 0, peak: 400 },
+        };
+      }
+
       const systemUsed = Math.max(0, totalMB - system.availableMB);
       // Same arithmetic as the Linux remote path: the CPU share is what remains of
       // the used RAM after the GPU's share, so the two never add up past the RAM total

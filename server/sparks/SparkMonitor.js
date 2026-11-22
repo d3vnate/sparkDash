@@ -287,7 +287,12 @@ export class SparkMonitor {
     // needs a fresh collector just like a kind change does.
     const transportChanged =
       JSON.stringify(this.spark?.agent ?? null) !== JSON.stringify(spark?.agent ?? null);
+    const prevPollInterval = this.spark?.pollIntervalMs ?? null;
     this.spark = spark;
+    const nextPollInterval = spark.pollIntervalMs ?? null;
+    if (nextPollInterval !== prevPollInterval) {
+      this.setPollInterval(nextPollInterval || getSettings().pollIntervalMs);
+    }
     if (kindChanged || transportChanged) {
       this.collector = createCollector(spark);
       this._metrics.runtimes = null;

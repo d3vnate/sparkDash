@@ -149,18 +149,12 @@ test("CPU, RAM, storage, network and memory on a Windows unit", async () => {
   assert.equal(await c.readWindowsUptime(), 93784);
 });
 
-test("network speeds come from the byte-counter delta between polls", async () => {
+test("network speeds come from the performance-counter rates", async () => {
   const c = windowsCollector();
-  await c.collectNetwork();
-  const before = c.lastNetworkStats.get("Ethernet");
-  c.lastNetworkStats.set("Ethernet", { ...before, time: before.time - 2000 });
-  c._windowsRun = async (key) =>
-    key === "gpu" ? GPU_OUT : SYSTEM_OUT.replace("Ethernet\tUp\t1000000000\t5000000\t3000000", "Ethernet\tUp\t1000000000\t5002000\t3001000");
   const net = await c.collectNetwork();
   const eth = net.interfaces.find((i) => i.name === "Ethernet");
-  // The test baseline is 2 s in the past, measured against the real clock: allow scheduling jitter.
-  assert.ok(Math.abs(eth.rxSpeed - 1000) <= 10, `rx ${eth.rxSpeed}`);
-  assert.ok(Math.abs(eth.txSpeed - 500) <= 5, `tx ${eth.txSpeed}`);
+  assert.equal(eth.rxSpeed, 5000000);
+  assert.equal(eth.txSpeed, 3000000);
 });
 
 test("a failing PowerShell call degrades to defaults instead of throwing", async () => {
@@ -279,29 +273,126 @@ test("the AMD fallback runs only when nvidia-smi is not installed, never when it
   assert.match(WINDOWS_GPU_SCRIPT, /Test-Path \$p/);
 });
 
-test("Windows drives report read/write speed from cumulative counters and the counter's own clock", async () => {
-  const stamp = (ms) => String(ms * 10_000);
-  const run = (ioRows) =>
-    [SYSTEM_OUT, "---", ioRows.join("\r\n")].join("\r\n");
+test("Windows drives report read/write speed from the performance-counter rates", async () => {
   const c = windowsCollector();
-  // 5 s apart: C: read 10 MiB and wrote 20 MiB; D: idle.
-  c._windowsRun = async () => run(["C:\t1000\t2000\t" + stamp(100_000), "D:\t0\t0\t" + stamp(100_000)]);
-  const first = await c.collectStorage();
-  assert.deepEqual(first.map((d) => [d.device, d.readSpeed, d.writeSpeed]), [["C:", 0, 0], ["D:", 0, 0]]);
   c._windowsRun = async () =>
-    run(["C:\t" + (1000 + 10 * 1048576) + "\t" + (2000 + 20 * 1048576) + "\t" + stamp(105_000)]);
-  const second = await c.collectStorage();
-  const cdrive = second.find((d) => d.device === "C:");
-  assert.equal(cdrive.readSpeed, 2 * 1048576);
-  assert.equal(cdrive.writeSpeed, 4 * 1048576);
-  // A drive with no counter row (D: here) stays at 0 rather than failing.
-  assert.equal(second.find((d) => d.device === "D:").readSpeed, 0);
-  // The same cached output read again does not turn into a 0 speed for C:.
-  const again = await c.collectStorage();
-  assert.equal(again.find((d) => d.device === "C:").readSpeed, 2 * 1048576);
+    [SYSTEM_OUT, "---", "C:\t1048576\t2097152", "D:\t0\t0"].join("\r\n");
+  const disks = await c.collectStorage();
+  assert.deepEqual(
+    disks.map((d) => [d.device, d.readSpeed, d.writeSpeed]),
+    [["C:", 1048576, 2097152], ["D:", 0, 0]]
+  );
 });
 
-test("the Windows system script reads per-drive disk counters and still fits the command-line limit", () => {
-  assert.match(WINDOWS_SYSTEM_SCRIPT, /Win32_PerfRawData_PerfDisk_LogicalDisk/);
+test("the Windows system script uses PDH counters for per-drive I/O and still fits the command-line limit", () => {
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /Get-Counter/);
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /LogicalDisk/);
+  assert.doesNotMatch(WINDOWS_SYSTEM_SCRIPT, /Win32_PerfRawData_PerfDisk_LogicalDisk/);
   assert.ok(powershellCommand(WINDOWS_SYSTEM_SCRIPT).length < 8000);
+});
+
+test("the Windows GPU script skips remote/virtual adapters before pairing a controller", () => {
+  // A Strix Halo exposes a "Microsoft Remote Display Adapter" first; using it
+  // as the perf-counter adapter's name loses the AMD registry memory size and
+  // falls back to the OS-visible RAM total.
+  assert.match(WINDOWS_GPU_SCRIPT, /Win32_VideoController \| \? \{ \$_.Name -notmatch 'NVIDIA\|Remote Display\|Basic Display\|Virtual' \}/);
+});
+
+test("a carved-out Windows GPU pool is judged on its own, not against system RAM", async () => {
+  const c = windowsCollector();
+  const carved = [
+    "0,1,,0,0,0,,,,,0,AMD Radeon(TM) 8060S Graphics",
+    "---",
+    "50032,98304",
+    "---",
+    "",
+    "---",
+    "AMD Radeon(TM) 8060S Graphics,32.0.31032.1003",
+    "---",
+    "MemTotal: 33185604 kB",
+    "MemAvailable: 18344208 kB",
+  ].join("\n");
+  c._windowsRun = async (key) => (key === "gpu" ? carved : SYSTEM_OUT);
+  const mem = await c.collectUnifiedMemory();
+  assert.equal(mem.total, 98304);
+  assert.equal(mem.gpuUsed, 50032);
+  assert.equal(mem.cpuUsed, 0);
+  assert.equal(mem.available, 98304 - 50032);
+  assert.equal(mem.percentage, Math.round((50032 / 98304) * 100));
+  assert.equal(mem.oomRisk, "low");
+});
+
+test("vramTotalMb overrides a Windows driver that reports no capacity", async () => {
+  const amdOut = [
+    "0,37,,0,0,0,,,,,0,AMD Radeon Graphics",
+    "---",
+    "4096,0",
+    "---",
+    "",
+    "---",
+    "AMD Radeon Graphics,driver",
+    "---",
+    "MemTotal: 67108864 kB",
+    "MemAvailable: 33554432 kB",
+  ].join("\n");
+  const collector = new SystemCollector({
+    id: "windows-carved",
+    platform: "windows",
+    kind: "host",
+    isLocal: false,
+    vramTotalMb: 98304,
+  });
+  collector._windowsRun = async () => amdOut;
+  const gpu = await collector.collectGpu();
+  assert.equal(gpu.vram.total, 98304);
+  assert.equal(gpu.vram.available, 98304 - 4096);
+  assert.equal(gpu.gpus[0].vram.total, 98304);
+  assert.equal(gpu.metricAvailability.vramTotal, true);
+});
+
+test("the registry normalizes vramTotalMb and drops invalid values", () => {
+  const registry = Object.create(SparkRegistry.prototype);
+  assert.equal(registry._normalizeConfig({ id: "x", vramTotalMb: 98304 }).vramTotalMb, 98304);
+  assert.equal(registry._normalizeConfig({ id: "x", vramTotalMb: "65536" }).vramTotalMb, 65536);
+  assert.equal(registry._normalizeConfig({ id: "x", vramTotalMb: 0 }).vramTotalMb, null);
+  assert.equal(registry._normalizeConfig({ id: "x", vramTotalMb: "nope" }).vramTotalMb, null);
+  assert.equal(registry._normalizeConfig({ id: "x" }).vramTotalMb, null);
+});
+
+test("the registry normalizes a per-unit poll interval and drops invalid values", () => {
+  const registry = Object.create(SparkRegistry.prototype);
+  assert.equal(registry._normalizeConfig({ id: "x", pollIntervalMs: 5000 }).pollIntervalMs, 5000);
+  assert.equal(registry._normalizeConfig({ id: "x", pollIntervalMs: "10000" }).pollIntervalMs, 10000);
+  assert.equal(registry._normalizeConfig({ id: "x", pollIntervalMs: 499 }).pollIntervalMs, null);
+  assert.equal(registry._normalizeConfig({ id: "x", pollIntervalMs: 60001 }).pollIntervalMs, null);
+  assert.equal(registry._normalizeConfig({ id: "x" }).pollIntervalMs, null);
+});
+
+test("the Windows system script uses PDH counters, WMI adapters and route print", () => {
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /Get-Counter/);
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /route print -4/);
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /Win32_ComputerSystem/);
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /Win32_LogicalDisk/);
+  assert.match(WINDOWS_SYSTEM_SCRIPT, /Win32_NetworkAdapter/);
+  assert.doesNotMatch(
+    WINDOWS_SYSTEM_SCRIPT,
+    /Get-NetRoute|Get-NetAdapterStatistics|Get-NetIPAddress|Get-NetAdapter\b|Win32_Processor|Win32_OperatingSystem|Win32_PerfFormattedData_PerfOS_Memory|Win32_PerfFormattedData_PerfOS_Processor|Win32_PerfRawData_Tcpip_NetworkInterface/
+  );
+  assert.ok(powershellCommand(WINDOWS_SYSTEM_SCRIPT).length < 8000);
+});
+
+test("the GPU script samples a configurable number of times", () => {
+  assert.match(
+    WINDOWS_GPU_SCRIPT,
+    /1\.\.\d+ \| % \{ gcim Win32_PerfFormattedData_GPUPerformanceCounters_GPUEngine/
+  );
+});
+
+test("a route section with the interface IP maps to the adapter alias", () => {
+  const out = SYSTEM_OUT.replace(
+    /\r\nEthernet\r\n---\r\nEthernet\tUp/,
+    "\r\n192.168.1.122\r\n---\r\nEthernet\tUp"
+  );
+  const s = parseWindowsSystem(out);
+  assert.equal(s.defaultInterface, "Ethernet");
 });
