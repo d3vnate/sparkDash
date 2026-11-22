@@ -59,6 +59,7 @@ import type {
   StorageScanJob,
   StorageScanRequest,
   StorageScanSnapshot,
+  AgentJunkResult,
   StorageStatus,
   StorageContext,
   StorageFolders,
@@ -835,6 +836,11 @@ export function fetchStorageContext(id: string): Promise<StorageContext> {
   return apiFetch(storageUrl(id, "/context"));
 }
 
+/** Remove agent junk: what coding agents left behind on the unit, with a smart guess per item (read-only). */
+export function fetchAgentJunk(id: string): Promise<AgentJunkResult> {
+  return apiFetch(storageUrl(id, "/agent-junk"));
+}
+
 /** The latest scan job and, when it changed since `since`, the scan result. */
 export function fetchStorageScan(id: string, since?: number): Promise<StorageScanSnapshot> {
   return apiFetch(storageUrl(id, since ? `/scan?since=${since}` : "/scan"));
@@ -1196,4 +1202,17 @@ export function getLlmInsights(
   return apiFetch<LlmInsightsResponse>(
     `/api/sparks/${encodeURIComponent(sparkId)}/llm/insights?${params.toString()}`
   );
+}
+
+/** Install the pinned spark-attic release after explicit user confirmation. */
+export function installSparkAttic(id: string, sudoPassword?: string): Promise<{ success: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/attic/install`, { method: "POST", body: JSON.stringify({ confirm: true, stopDesktopConfirmed: true, ...(sudoPassword ? { sudoPassword } : {}) }) });
+}
+
+export function fetchAtticInstallFlags(id: string): Promise<{ passwordAllowed: boolean; plainPasswordAllowed: boolean }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/attic/install`);
+}
+
+export function fetchAtticInstallStatus(id: string): Promise<{ installed: boolean | null }> {
+  return apiFetch(`/api/sparks/${encodeURIComponent(id)}/attic/status`);
 }
