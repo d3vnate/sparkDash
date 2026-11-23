@@ -14,7 +14,9 @@ import { BotIcon, ServerIcon } from "../ui/icons";
 import { LlmCachePanel } from "../SparkPage/LlmCachePanel";
 import { LlmDailyChart } from "../SparkPage/LlmDailyChart";
 import { LlmTokenTotals } from "../SparkPage/LlmTokenTotals";
+import { LlmClusterPanel } from "./LlmClusterPanel";
 import { LlmInsightsPanel } from "./LlmInsightsPanel";
+import { LlmLiveOverview } from "./LlmLiveOverview";
 import {
   LlmLineChart,
   LlmQueueChart,
@@ -44,11 +46,6 @@ function liveFor(spark: SparkSnapshot, port: number): LlmMetrics | null {
     spark.metrics.llm?.[index >= 0 ? index : 0] ??
     null
   );
-}
-
-function gib(bytes: number | null | undefined): string {
-  if (bytes == null || !Number.isFinite(bytes)) return "—";
-  return `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 }
 
 export function LlmServerDetailPage({
@@ -128,7 +125,6 @@ export function LlmServerDetailPage({
 
   const available = llm?.available === true;
   const measured = llm?.measurementValid !== false;
-  const slots = llm?.slots;
   const insights: LlmInsightsData | null =
     data.insights && data.insights.enabled === true
       ? (data.insights as LlmInsightsData)
@@ -251,6 +247,9 @@ export function LlmServerDetailPage({
               </Tag>
             ) : null}
             {llm?.engineVersion ? <Tag tone="info">v{llm.engineVersion}</Tag> : null}
+            {llm?.cluster?.parts != null && llm.cluster.parts > 1 ? (
+              <Tag tone="info">{t("llmServer.nodeCount", { n: llm.cluster.parts })}</Tag>
+            ) : null}
             {llm?.contextLength ? (
               <Tag tone="info">{t("llmServer.context", { size: Math.round(llm.contextLength / 1024) })}</Tag>
             ) : null}
@@ -259,95 +258,16 @@ export function LlmServerDetailPage({
       >
         {available ? (
           <>
-            <div className="sp-tiles">
-              <div className="sp-tile">
-                <b>{`${slots?.running ?? llm?.requestsRunning ?? "—"} / ${slots?.waiting ?? llm?.requestsWaiting ?? "—"}`}</b>
-                <span>{t("llmServer.runningWaiting")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{measured ? fmtNum(llm?.generationTps) : "—"}</b>
-                <span>{t("llmServer.decodeTps")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{measured ? fmtNum(llm?.perStreamTps) : "—"}</b>
-                <span>{t("llmServer.perStreamTps")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{measured ? fmtNum(llm?.prefillTps) : "—"}</b>
-                <span>{t("llmServer.prefillTps")}</span>
-              </div>
-              {llm?.perStreamPrefillTps != null ? (
-                <div className="sp-tile">
-                  <b>{fmtNum(llm.perStreamPrefillTps)}</b>
-                  <span>{t("llmServer.perStreamPrefill")}</span>
-                </div>
-              ) : null}
-              {llm?.cachedPrefillTps != null ? (
-                <div className="sp-tile">
-                  <b>{fmtNum(llm.cachedPrefillTps)}</b>
-                  <span>{t("llmServer.cachedPrefill")}</span>
-                </div>
-              ) : null}
-              {llm?.uncachedPrefillTps != null ? (
-                <div className="sp-tile">
-                  <b>{fmtNum(llm.uncachedPrefillTps)}</b>
-                  <span>{t("llmServer.uncachedPrefill")}</span>
-                </div>
-              ) : null}
-              <div className="sp-tile">
-                <b>{fmtPct(llm?.kvCacheUsage)}</b>
-                <span>{t("llmServer.kvUsage")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{gib(llm?.deviceMemoryBytes)}</b>
-                <span>{t("llmServer.deviceMemory")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{fmtPct(llm?.prefixCacheHitRate)}</b>
-                <span>{t("llmServer.cacheHit")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{fmtPct(llm?.mtpAcceptanceRate)}</b>
-                <span>{t("llmServer.mtpAcceptance")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{llm?.ttftP95Seconds == null ? "—" : fmtSeconds(llm.ttftP95Seconds)}</b>
-                <span>{t("llmServer.ttftP95")}</span>
-              </div>
-              {llm?.ttftSeconds != null ? (
-                <div className="sp-tile">
-                  <b>{fmtSeconds(llm.ttftSeconds)}</b>
-                  <span>{t("llmServer.ttftMean")}</span>
-                </div>
-              ) : null}
-              {llm?.itlP95Seconds != null ? (
-                <div className="sp-tile">
-                  <b>{fmtSeconds(llm.itlP95Seconds)}</b>
-                  <span>{t("llmServer.itlP95")}</span>
-                </div>
-              ) : null}
-              {llm?.e2eP95Seconds != null ? (
-                <div className="sp-tile">
-                  <b>{fmtSeconds(llm.e2eP95Seconds)}</b>
-                  <span>{t("llmServer.e2eP95")}</span>
-                </div>
-              ) : null}
-              {llm?.requestLatencySeconds != null ? (
-                <div className="sp-tile">
-                  <b>{fmtSeconds(llm.requestLatencySeconds)}</b>
-                  <span>{t("llmServer.latencyMean")}</span>
-                </div>
-              ) : null}
-              <div className="sp-tile">
-                <b>{llm?.prefillP95Seconds == null ? "—" : fmtSeconds(llm.prefillP95Seconds)}</b>
-                <span>{t("llmServer.prefillP95")}</span>
-              </div>
-              <div className="sp-tile">
-                <b>{llm?.decodeP95Seconds == null ? "—" : fmtSeconds(llm.decodeP95Seconds)}</b>
-                <span>{t("llmServer.decodeP95")}</span>
-              </div>
-            </div>
+            <LlmLiveOverview
+              llm={llm}
+              points={points}
+              insights={insights}
+              available={available}
+              measured={measured}
+              range={range}
+            />
             {llm?.backend === "tensorfold" ? <LlmCachePanel llm={llm} /> : null}
+            {llm?.cluster ? <LlmClusterPanel cluster={llm.cluster} /> : null}
           </>
         ) : (
           <p className="sp-muted">{t("llmServer.noLive")}</p>

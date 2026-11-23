@@ -559,6 +559,101 @@ export interface LlmSlots {
   idle: boolean;
 }
 
+/** One TensorFold KV-ownership part (one per rank) and the rows it holds. */
+export interface LlmClusterPart {
+  id: string;
+  freeRows: number | null;
+  liveRows: number | null;
+  keptRows: number | null;
+  twinRows: number | null;
+  holdRows: number | null;
+  liveStreams: number | null;
+}
+
+/** One TensorFold rank's disk spill tier and rank-owned transfer counters. */
+export interface LlmClusterRank {
+  id: string;
+  spillPoints: number | null;
+  spillBlocks: number | null;
+  storedBytes: number | null;
+  capacityBytes: number | null;
+  diskFreeBytes: number | null;
+  stagingBytes: number | null;
+  stagingPeakBytes: number | null;
+  writesQueued: number | null;
+  writesCommitted: number | null;
+  writesFailed: number | null;
+  writesPending: number | null;
+  readBytes: number | null;
+  readFailed: number | null;
+  dedupBlocks: number | null;
+  dedupBytes: number | null;
+  compatibleMisses: number | null;
+  crcErrors: number | null;
+  sizeErrors: number | null;
+  evictedTurns: number | null;
+  evictedForks: number | null;
+  promptFetches: number | null;
+  promptRows: number | null;
+  promptBytes: number | null;
+  promptSyncs: number | null;
+  fetchRounds: number | null;
+  ownerRounds: number | null;
+  copies: number | null;
+  copyBytes: number | null;
+  plans: number | null;
+  checks: number | null;
+  transfersFailed: number | null;
+}
+
+/** The rank-pair stall/failure monitor TensorFold publishes for a multi-rank engine. */
+export interface LlmClusterPair {
+  failed: number | null;
+  busyMs: number | null;
+  stallMs: number | null;
+  stalled: boolean | null;
+  broken: boolean | null;
+}
+
+/** Cross-rank KV transfers: carries, moves, prompt fetches and copies. */
+export interface LlmClusterTransfer {
+  carries: number | null;
+  carryRescued: number | null;
+  carryPressure: number | null;
+  carryOthers: number | null;
+  carryPaused: number | null;
+  moves: number | null;
+  movedTokens: number | null;
+  movedBytes: number | null;
+  copies: number | null;
+  copyBytes: number | null;
+  promptFetches: number | null;
+  promptRows: number | null;
+  promptBytes: number | null;
+  promptSyncs: number | null;
+  fetchRounds: number | null;
+  ownerRounds: number | null;
+  transfersFailed: number | null;
+  refusedNoTarget: number | null;
+  noPart: number | null;
+  staled: number | null;
+}
+
+/**
+ * TensorFold multi-rank observability: the KV-ownership parts (one per node),
+ * each rank's disk spill tier, the pair monitor and cross-rank transfers.
+ * Absent for single-rank engines; a missing reading stays null.
+ */
+export interface LlmCluster {
+  parts: number | null;
+  partRows: number | null;
+  ranksReported: number | null;
+  pair: LlmClusterPair;
+  partStats: LlmClusterPart[];
+  ranks: LlmClusterRank[];
+  transfer: LlmClusterTransfer;
+}
+
 export interface LlmMetrics {
   /** The LLM port this snapshot came from — lets the UI match panels to probes by port, not array position. */
   port?: number;
@@ -639,6 +734,8 @@ export interface LlmMetrics {
    * `kvCacheUsage`, which is one stream's share of its window. Null for other backends.
    */
   cache?: LlmCacheMetrics | null;
+  /** TensorFold multi-rank topology, per-part KV rows, per-rank disk tiers and pair health. Null otherwise. */
+  cluster?: LlmCluster | null;
   /** Cumulative TTFT / request-latency histogram buckets for the history sampler. TensorFold only. */
   cacheHistograms?: LlmCacheHistograms | null;
   /** Allocated KV-cache pool in tokens (vLLM `cache_config_info`). null when unknown. */

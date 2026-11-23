@@ -1442,3 +1442,117 @@ test("_applyTensorFoldLive: a build that publishes streams keeps its own prefill
   probe._applyTensorFoldLive(health);
   assert.equal(probe.prefillActive, false);
 });
+
+/** The multi-rank block captured from foolsgold's TensorFold build (two GB10 nodes). */
+const TWO_RANK_METRICS = `
+tensorfold:requests_running 1
+tensorfold:kv_shard_parts 2
+tensorfold:kv_shard_part_rows 526336
+tensorfold:kv_shard_ranks 1
+tensorfold:kv_shard_part_free{part="0"} 104448
+tensorfold:kv_shard_part_live_rows{part="0"} 0
+tensorfold:kv_shard_part_kept_rows{part="0"} 421888
+tensorfold:kv_shard_part_twin_rows{part="0"} 0
+tensorfold:kv_shard_part_hold_rows{part="0"} 0
+tensorfold:kv_shard_part_live{part="0"} 0
+tensorfold:kv_shard_part_free{part="1"} 192512
+tensorfold:kv_shard_part_live_rows{part="1"} 83968
+tensorfold:kv_shard_part_kept_rows{part="1"} 249856
+tensorfold:kv_shard_part_twin_rows{part="1"} 0
+tensorfold:kv_shard_part_hold_rows{part="1"} 0
+tensorfold:kv_shard_part_live{part="1"} 1
+tensorfold:spill_points{rank="0"} 31
+tensorfold:spill_points{rank="1"} 31
+tensorfold:spill_blocks{rank="0"} 679
+tensorfold:spill_blocks{rank="1"} 679
+tensorfold:spill_stored_bytes{rank="0"} 725728000
+tensorfold:spill_stored_bytes{rank="1"} 1185790720
+tensorfold:spill_cap_bytes{rank="0"} 68719476736
+tensorfold:spill_cap_bytes{rank="1"} 68719476736
+tensorfold:spill_disk_free_bytes{rank="0"} 2234854449152
+tensorfold:spill_disk_free_bytes{rank="1"} 2354892095488
+tensorfold:spill_staging_bytes{rank="0"} 0
+tensorfold:spill_staging_bytes{rank="1"} 0
+tensorfold:spill_writes_committed{rank="0"} 169
+tensorfold:spill_writes_committed{rank="1"} 169
+tensorfold:spill_writes_failed{rank="0"} 0
+tensorfold:spill_writes_failed{rank="1"} 0
+tensorfold:spill_read_bytes{rank="0"} 1243299840
+tensorfold:spill_read_bytes{rank="1"} 4201267200
+tensorfold:kv_shard_rank_prompt_fetches{rank="0"} 26082
+tensorfold:kv_shard_rank_prompt_bytes{rank="0"} 206202765888
+tensorfold:kv_shard_rank_fetch_rounds{rank="0"} 58658
+tensorfold:kv_shard_rank_copies{rank="0"} 3
+tensorfold:kv_shard_rank_transfers_failed{rank="0"} 0
+tensorfold:kv_shard_carries 2
+tensorfold:kv_shard_moves 1
+tensorfold:kv_shard_moved_tokens 403539
+tensorfold:kv_shard_prompt_bytes 206202765888
+tensorfold:kv_shard_fetch_rounds 58658
+tensorfold:kv_shard_copies 3
+tensorfold:kv_shard_transfers_failed 0
+tensorfold:kv_shard_refused_no_target 5
+tensorfold:pair_failed 0
+tensorfold:pair_busy_ms 18
+tensorfold:pair_stall_ms 120000
+tensorfold:pair_stalled 0
+tensorfold:pair_broken 0
+`;
+
+test("_applyTensorFoldMetrics: both ranks are reported with KV parts, spill tiers and pair health", async () => {
+  const probe = new LlmProbe({ lanIp: "192.0.2.10" }, 8888);
+  probe.backendType = "tensorfold";
+  probe._fetch = async () => ({ ok: true, text: async () => TWO_RANK_METRICS });
+  await probe._applyTensorFoldMetrics(2);
+  const cluster = probe.cluster;
+  assert.ok(cluster);
+  assert.equal(cluster.parts, 2);
+  assert.equal(cluster.partRows, 526336);
+  assert.equal(cluster.ranksReported, 1);
+  assert.equal(cluster.partStats.length, 2);
+  const part1 = cluster.partStats.find((p) => p.id === "1");
+  assert.equal(part1.freeRows, 192512);
+  assert.equal(part1.liveRows, 83968);
+  assert.equal(part1.keptRows, 249856);
+  assert.equal(part1.liveStreams, 1);
+  assert.equal(cluster.ranks.length, 2);
+  const rank0 = cluster.ranks.find((r) => r.id === "0");
+  assert.equal(rank0.storedBytes, 725728000);
+  assert.equal(rank0.capacityBytes, 68719476736);
+  assert.equal(rank0.diskFreeBytes, 2234854449152);
+  assert.equal(rank0.writesCommitted, 169);
+  assert.equal(rank0.promptBytes, 206202765888);
+  assert.equal(rank0.fetchRounds, 58658);
+  const rank1 = cluster.ranks.find((r) => r.id === "1");
+  assert.equal(rank1.storedBytes, 1185790720);
+  assert.equal(rank1.readBytes, 4201267200);
+  assert.equal(rank1.promptBytes, null);
+  assert.equal(cluster.pair.stalled, false);
+  assert.equal(cluster.pair.broken, false);
+  assert.equal(cluster.pair.busyMs, 18);
+  assert.equal(cluster.pair.stallMs, 120000);
+  assert.equal(cluster.transfer.carries, 2);
+  assert.equal(cluster.transfer.promptBytes, 206202765888);
+  assert.equal(cluster.transfer.fetchRounds, 58658);
+  assert.equal(cluster.transfer.copies, 3);
+  assert.equal(cluster.transfer.transfersFailed, 0);
+  assert.equal(cluster.transfer.refusedNoTarget, 5);
+  assert.equal(probe._getSnapshot().cluster.parts, 2);
+});
+
+test("_applyTensorFoldMetrics: a single-rank scrape leaves cluster null", async () => {
+  const probe = new LlmProbe({ lanIp: "192.0.2.10" }, 8888);
+  probe._fetch = async () => ({ ok: true, text: async () => "tensorfold:requests_running 1" });
+  await probe._applyTensorFoldMetrics(2);
+  assert.equal(probe.cluster, null);
+});
+
+test("_applyTensorFoldMetrics: a failed scrape clears the previous cluster reading", async () => {
+  const probe = new LlmProbe({ lanIp: "192.0.2.10" }, 8888);
+  probe._fetch = async () => ({ ok: true, text: async () => TWO_RANK_METRICS });
+  await probe._applyTensorFoldMetrics(2);
+  assert.ok(probe.cluster);
+  probe._fetch = async () => ({ ok: false, status: 500, text: async () => "" });
+  await probe._applyTensorFoldMetrics(2);
+  assert.equal(probe.cluster, null);
+});

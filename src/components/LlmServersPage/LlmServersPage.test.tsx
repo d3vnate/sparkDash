@@ -45,6 +45,47 @@ function sparkWithEngine() {
       ttftP95Seconds: 89.8,
       deviceMemoryBytes: 112.4 * 1024 ** 3,
       cache: { status: "unavailable", source: "health", reason: "engine reports no cache group" },
+      cluster: {
+        parts: 2,
+        partRows: 526336,
+        ranksReported: 1,
+        pair: { failed: 0, busyMs: 18, stallMs: 120000, stalled: false, broken: false },
+        partStats: [
+          { id: "0", freeRows: 104448, liveRows: 0, keptRows: 421888, twinRows: 0, holdRows: 0, liveStreams: 0 },
+          { id: "1", freeRows: 192512, liveRows: 83968, keptRows: 249856, twinRows: 0, holdRows: 0, liveStreams: 1 },
+        ],
+        ranks: [
+          {
+            id: "0", spillPoints: 31, spillBlocks: 679, storedBytes: 725728000,
+            capacityBytes: 68719476736, diskFreeBytes: 2234854449152, stagingBytes: 0,
+            stagingPeakBytes: 75341824, writesQueued: 169, writesCommitted: 169,
+            writesFailed: 0, writesPending: 0, readBytes: 1243299840, readFailed: 0,
+            dedupBlocks: 15, dedupBytes: 21442560, compatibleMisses: 160, crcErrors: 0,
+            sizeErrors: 0, evictedTurns: 138, evictedForks: 0, promptFetches: 26082,
+            promptRows: 715981826, promptBytes: 206202765888, promptSyncs: 16840,
+            fetchRounds: 58658, ownerRounds: 0, copies: 3, copyBytes: 291962880,
+            plans: 1011, checks: 58, transfersFailed: 0,
+          },
+          {
+            id: "1", spillPoints: 31, spillBlocks: 679, storedBytes: 1185790720,
+            capacityBytes: 68719476736, diskFreeBytes: 2354892095488, stagingBytes: 0,
+            stagingPeakBytes: 62582784, writesQueued: 169, writesCommitted: 169,
+            writesFailed: 0, writesPending: 0, readBytes: 4201267200, readFailed: 0,
+            dedupBlocks: 15, dedupBytes: 11120640, compatibleMisses: 0, crcErrors: 0,
+            sizeErrors: 0, evictedTurns: 138, evictedForks: 0, promptFetches: null,
+            promptRows: null, promptBytes: null, promptSyncs: null, fetchRounds: null,
+            ownerRounds: null, copies: null, copyBytes: null, plans: null, checks: null,
+            transfersFailed: null,
+          },
+        ],
+        transfer: {
+          carries: 2, carryRescued: 1, carryPressure: 0, carryOthers: 1, carryPaused: 0,
+          moves: 1, movedTokens: 403539, movedBytes: 290548080, copies: 3,
+          copyBytes: 291962880, promptFetches: 26082, promptRows: 715981826,
+          promptBytes: 206202765888, promptSyncs: 16840, fetchRounds: 58658,
+          ownerRounds: 0, transfersFailed: 0, refusedNoTarget: 5, noPart: 0, staled: 95,
+        },
+      },
     },
   ] as unknown as LlmMetrics[];
   return spark;
@@ -228,6 +269,21 @@ describe("LLM Servers view", () => {
     expect(container.textContent).toContain("DeepSeek-V4.1-Flash-1017-EXL3");
     expect(container.textContent).toContain("69.5");
     expect(container.textContent).toContain("93.7");
+    expect(container.textContent).toContain("Right now");
+    expect(container.textContent).toContain("Decoding");
+    expect(container.textContent).toContain("Serving normally");
+    expect(container.textContent).toContain("Throughput");
+    expect(container.textContent).toContain("Latency");
+    expect(container.textContent).toContain("Engine memory");
+    expect(container.textContent).toContain("Cluster");
+    expect(container.textContent).toContain("2 nodes");
+    expect(container.textContent).toContain("across 2 nodes");
+    expect(container.textContent).toContain("2 KV parts · 526,336 rows each");
+    expect(container.textContent).toContain("Pair healthy");
+    expect(container.textContent).toContain("Node 0");
+    expect(container.textContent).toContain("Node 1");
+    expect(container.textContent).toContain("249,856");
+    expect(container.textContent).toContain("Cross-rank transfers");
     expect(container.textContent).toContain("Queue knee");
     expect(container.textContent).toContain("Queue depth and prefill time");
     expect(container.textContent).toContain("Prefix cache headroom");
@@ -270,5 +326,52 @@ describe("LLM Servers view", () => {
     expect(container.textContent).toContain("Metrics history is off");
     expect(container.textContent).toContain("69.5");
     expect(container.textContent).not.toContain("Queue knee");
+  });
+
+  it("summarises an idle engine with its last activity", async () => {
+    const spark = sparkWithEngine();
+    const base = spark.metrics.llm![0] as LlmMetrics;
+    spark.metrics.llm = [
+      {
+        ...base,
+        generationTps: 0,
+        perStreamTps: null,
+        prefillTps: 0,
+        requestsRunning: 0,
+        requestsWaiting: 0,
+        slots: { total: 4, running: 0, waiting: 0, prefilling: false, decoding: false, idle: true },
+        lastActiveAt: Date.now() - 120_000,
+      },
+    ] as unknown as LlmMetrics[];
+    const { container } = render(
+      <LlmServerDetailPage sparkId="spark-1" sparks={[spark]} onBack={() => {}} />
+    );
+    await flush();
+    expect(container.textContent).toContain("Idle");
+    expect(container.textContent).toContain("No requests in flight.");
+    expect(container.textContent).toContain("Last served 2m ago");
+  });
+
+  it("flags queue pressure and running/waiting slots", async () => {
+    const spark = sparkWithEngine();
+    const base = spark.metrics.llm![0] as LlmMetrics;
+    spark.metrics.llm = [
+      {
+        ...base,
+        requestsRunning: 2,
+        requestsWaiting: 3,
+        prefixCacheHitRate: 0.1,
+        slots: { total: 8, running: 2, waiting: 3, prefilling: false, decoding: true, idle: false },
+      },
+    ] as unknown as LlmMetrics[];
+    const { container } = render(
+      <LlmServerDetailPage sparkId="spark-1" sparks={[spark]} onBack={() => {}} />
+    );
+    await flush();
+    expect(container.textContent).toContain("Queued");
+    expect(container.textContent).toContain("3 waiting · 2 running.");
+    expect(container.textContent).toContain("Queue pressure");
+    expect(container.textContent).toContain("Cache cold");
+    expect(container.textContent).toContain("5 of 8 slots");
   });
 });

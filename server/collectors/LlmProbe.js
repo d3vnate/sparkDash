@@ -299,6 +299,14 @@ export class LlmProbe {
      */
     this.cache = null;
     /**
+     * TensorFold cluster topology and per-rank observability, parsed from the same
+     * /metrics body: KV-ownership parts, each rank's disk spill tier, the rank-pair
+     * stall/failure gauges and cross-rank transfer counters. Null when the endpoint
+     * is not a multi-rank TensorFold build or publishes none of those series.
+     * @type {object | null}
+     */
+    this.cluster = null;
+    /**
      * Cumulative TTFT / request-latency histogram buckets from the same TensorFold /metrics
      * read, for the history sampler to difference into window quantiles. Prefill/decode
      * histograms are optional additions for the LLM server view. Null when absent.
@@ -621,6 +629,7 @@ export class LlmProbe {
     this.generationProgressTokens = null;
     this.kvCacheUsage = null;
     this.cache = null;
+    this.cluster = null;
     this.cacheHistograms = null;
     this._clearEngineMemory();
     this.requestsRunning = null;
@@ -2813,12 +2822,135 @@ export class LlmProbe {
     };
   }
 
+  /**
+   * TensorFold's multi-rank observability, from the same Prometheus body:
+   * `kv_shard_part_*` (one KV-ownership part per rank), `spill_*{rank=…}`
+   * (each node's disk tier), `kv_shard_rank_*` (rank-owned transfer counters)
+   * and `pair_*` (the rank-pair stall/failure monitor). A single-rank build
+   * publishes none of these and leaves `cluster` null.
+   */
+  _applyTensorFoldCluster(txt) {
+    const gauge = (name) => this._getPromMetric(txt, `tensorfold:${name}`);
+    const labeled = (name, key) => this._getPromLabeledSeries(txt, `tensorfold:${name}`, key);
+
+    const parts = gauge("kv_shard_parts");
+    const partRows = gauge("kv_shard_part_rows");
+    const ranksReported = gauge("kv_shard_ranks");
+
+    const partSeries = {
+      freeRows: labeled("kv_shard_part_free", "part"),
+      liveRows: labeled("kv_shard_part_live_rows", "part"),
+      keptRows: labeled("kv_shard_part_kept_rows", "part"),
+      twinRows: labeled("kv_shard_part_twin_rows", "part"),
+      holdRows: labeled("kv_shard_part_hold_rows", "part"),
+      liveStreams: labeled("kv_shard_part_live", "part"),
+    };
+    const partIds = new Set();
+    for (const map of Object.values(partSeries)) for (const id of map.keys()) partIds.add(id);
+    const partStats = [...partIds]
+      .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b))
+      .map((id) => ({
+        id,
+        freeRows: partSeries.freeRows.get(id) ?? null,
+        liveRows: partSeries.liveRows.get(id) ?? null,
+        keptRows: partSeries.keptRows.get(id) ?? null,
+        twinRows: partSeries.twinRows.get(id) ?? null,
+        holdRows: partSeries.holdRows.get(id) ?? null,
+        liveStreams: partSeries.liveStreams.get(id) ?? null,
+      }));
+
+    const rankSeries = {
+      spillPoints: labeled("spill_points", "rank"),
+      spillBlocks: labeled("spill_blocks", "rank"),
+      storedBytes: labeled("spill_stored_bytes", "rank"),
+      capacityBytes: labeled("spill_cap_bytes", "rank"),
+      diskFreeBytes: labeled("spill_disk_free_bytes", "rank"),
+      stagingBytes: labeled("spill_staging_bytes", "rank"),
+      stagingPeakBytes: labeled("spill_staging_peak", "rank"),
+      writesQueued: labeled("spill_writes_queued", "rank"),
+      writesCommitted: labeled("spill_writes_committed", "rank"),
+      writesFailed: labeled("spill_writes_failed", "rank"),
+      writesPending: labeled("spill_writes_pending", "rank"),
+      readBytes: labeled("spill_read_bytes", "rank"),
+      readFailed: labeled("spill_read_failed", "rank"),
+      dedupBlocks: labeled("spill_dedup_blocks", "rank"),
+      dedupBytes: labeled("spill_dedup_bytes", "rank"),
+      compatibleMisses: labeled("spill_compatible_misses", "rank"),
+      crcErrors: labeled("spill_crc_errors", "rank"),
+      sizeErrors: labeled("spill_size_errors", "rank"),
+      evictedTurns: labeled("spill_evicted_turns", "rank"),
+      evictedForks: labeled("spill_evicted_forks", "rank"),
+      promptFetches: labeled("kv_shard_rank_prompt_fetches", "rank"),
+      promptRows: labeled("kv_shard_rank_prompt_rows", "rank"),
+      promptBytes: labeled("kv_shard_rank_prompt_bytes", "rank"),
+      promptSyncs: labeled("kv_shard_rank_prompt_syncs", "rank"),
+      fetchRounds: labeled("kv_shard_rank_fetch_rounds", "rank"),
+      ownerRounds: labeled("kv_shard_rank_owner_rounds", "rank"),
+      copies: labeled("kv_shard_rank_copies", "rank"),
+      copyBytes: labeled("kv_shard_rank_copy_bytes", "rank"),
+      plans: labeled("kv_shard_rank_plans", "rank"),
+      checks: labeled("kv_shard_rank_checks", "rank"),
+      transfersFailed: labeled("kv_shard_rank_transfers_failed", "rank"),
+    };
+    const rankIds = new Set();
+    for (const map of Object.values(rankSeries)) for (const id of map.keys()) rankIds.add(id);
+    const ranks = [...rankIds]
+      .sort((a, b) => Number(a) - Number(b) || a.localeCompare(b))
+      .map((id) => {
+        const row = { id };
+        for (const [field, map] of Object.entries(rankSeries)) row[field] = map.get(id) ?? null;
+        return row;
+      });
+
+    const stalledRaw = gauge("pair_stalled");
+    const brokenRaw = gauge("pair_broken");
+    const pair = {
+      failed: gauge("pair_failed"),
+      busyMs: gauge("pair_busy_ms"),
+      stallMs: gauge("pair_stall_ms"),
+      stalled: stalledRaw === 1 ? true : stalledRaw === 0 ? false : null,
+      broken: brokenRaw === 1 ? true : brokenRaw === 0 ? false : null,
+    };
+
+    const transfer = {
+      carries: gauge("kv_shard_carries"),
+      carryRescued: gauge("kv_shard_carry_rescued"),
+      carryPressure: gauge("kv_shard_carry_pressure"),
+      carryOthers: gauge("kv_shard_carry_others"),
+      carryPaused: gauge("kv_shard_carry_paused"),
+      moves: gauge("kv_shard_moves"),
+      movedTokens: gauge("kv_shard_moved_tokens"),
+      movedBytes: gauge("kv_shard_moved_bytes"),
+      copies: gauge("kv_shard_copies"),
+      copyBytes: gauge("kv_shard_copy_bytes"),
+      promptFetches: gauge("kv_shard_prompt_fetches"),
+      promptRows: gauge("kv_shard_prompt_rows"),
+      promptBytes: gauge("kv_shard_prompt_bytes"),
+      promptSyncs: gauge("kv_shard_prompt_syncs"),
+      fetchRounds: gauge("kv_shard_fetch_rounds"),
+      ownerRounds: gauge("kv_shard_owner_rounds"),
+      transfersFailed: gauge("kv_shard_transfers_failed"),
+      refusedNoTarget: gauge("kv_shard_refused_no_target"),
+      noPart: gauge("kv_shard_no_part"),
+      staled: gauge("kv_shard_staled"),
+    };
+
+    if (parts == null && partStats.length === 0 && ranks.length === 0) {
+      this.cluster = null;
+      return;
+    }
+    this.cluster = { parts, partRows, ranksReported, pair, partStats, ranks, transfer };
+  }
+
   async _applyTensorFoldMetrics(dtSec, queueOnly = false, preserveLiveDecode = false) {
     // A full scrape is the only source of the live position gauges. Clear them
     // first so a failed, counterless or queue-only scrape reports unknown
     // instead of a position measured by an earlier poll.
     this.prefillProgressTokens = null;
     this.generationProgressTokens = null;
+    // Cluster readings are live too: a failed scrape must not keep the last
+    // pair state or per-rank disk figures looking current.
+    this.cluster = null;
     let txt;
     try {
       const res = await this._fetch(`${this.baseUrl}/metrics`);
@@ -2828,6 +2960,7 @@ export class LlmProbe {
       return;
     }
     if (typeof txt !== "string" || !txt.includes("tensorfold:")) return;
+    this._applyTensorFoldCluster(txt);
     const m = (name) => this._getPromMetric(txt, `tensorfold:${name}`);
     const gen = queueOnly ? null : m("generation_tokens_total");
     const prompt = queueOnly ? null : m("prompt_tokens_total");
@@ -4076,6 +4209,30 @@ export class LlmProbe {
    * @param {string} labelValue
    * @returns {number | null}
    */
+  /**
+   * Map label value → metric value for every series of `name` carrying `labelKey`.
+   * Used for TensorFold's per-part/per-rank series, where summing would mix nodes.
+   * @param {string} body
+   * @param {string} name
+   * @param {string} labelKey
+   * @returns {Map<string, number>}
+   */
+  _getPromLabeledSeries(body, name, labelKey) {
+    const escName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escKey = labelKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`^${escName}\\{([^}]*)\\}\\s+([\\d.eE+-]+)\\s*$`, "gm");
+    const labelRe = new RegExp(`(?:^|,)\\s*${escKey}="([^"]*)"`);
+    const out = new Map();
+    let m;
+    while ((m = re.exec(body)) !== null) {
+      const value = parseFloat(m[2]);
+      if (!Number.isFinite(value)) continue;
+      const label = m[1].match(labelRe);
+      if (label) out.set(label[1], value);
+    }
+    return out;
+  }
+
   _getPromMetricLabeled(body, name, labelKey, labelValue) {
     const escName = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const escKey = labelKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -4398,6 +4555,8 @@ export class LlmProbe {
       generationProgressTokens: this.backendType === "tensorfold" ? this.generationProgressTokens ?? null : null,
       kvCacheUsage: this.kvCacheUsage,
       cache: this.cache,
+      /** TensorFold multi-rank topology and per-node readings; null for single-rank engines. */
+      cluster: this.backendType === "tensorfold" ? this.cluster ?? null : null,
       cacheHistograms: this.cacheHistograms,
       kvCacheTokens: this.kvCacheTokens,
       kvCacheTokensAvailable: this.kvCacheTokensAvailable,
@@ -4479,6 +4638,7 @@ export class LlmProbe {
       generationProgressTokens: null,
       kvCacheUsage: null,
       cache: null,
+      cluster: null,
       cacheHistograms: null,
       kvCacheTokens: null,
       kvCacheTokensAvailable: null,
